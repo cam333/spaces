@@ -1,0 +1,4 @@
+{
+  "send": { "type": "hello", "protocolVersion": 1, "client": "contract-test" },
+  "expect": { "type": "hello-ok", "protocolVersion": 1 }
+}

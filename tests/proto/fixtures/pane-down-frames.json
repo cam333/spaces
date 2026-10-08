@@ -1,0 +1,19 @@
+{
+  "validDownFrames": [
+    { "type": "replay-start" },
+    { "type": "replay-end" },
+    { "type": "exit", "exitCode": 0 },
+    { "type": "exit", "exitCode": 1 },
+    { "type": "error", "code": "not_found", "message": "no live pane p1" },
+    { "type": "error", "code": "conflict", "message": "pane already controlled" },
+    { "type": "error", "code": "unauthorized", "message": "authentication required" },
+    { "type": "error", "code": "bad_request", "message": "invalid frame" }
+  ],
+  "invalidDownFrames": [
+    { "type": "exit" },
+    { "type": "exit", "exitCode": "0" },
+    { "type": "error", "code": "not_a_real_code", "message": "x" },
+    { "type": "error", "message": "missing code" },
+    { "type": "unknown" }
+  ]
+}

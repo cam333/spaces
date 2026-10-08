@@ -1,0 +1,221 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  # Every pull request, whatever branch it targets.
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-22.04, ubuntu-24.04-arm, macos-latest, windows-latest]
+        node: [20, 22]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      # `npm ci`, not `npm install`: installs exactly what package-lock.json
+      # pins, and fails if the lockfile and package.json disagree.
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: protocol schema drift check
+        run: npm run proto:check
+
+      - name: protocol docs coverage
+        run: npm run proto:docs
+
+      # The whole suite. A hand-picked subset here once left tests/tui
+      # gating nothing at all, and any directory added later would have
+      # repeated that.
+      - name: tests
+        run: npx vitest run
+
+      # Desktop mode answers only its owner: /api/* is 401 without a
+      # credential, and the agent guide is one of the few public paths. So
+      # "up" means the guide answers 200, and "auth is on" means the config
+      # API answers 401 to an anonymous request.
+      - name: Start server and health check
+        shell: bash
+        env:
+          # No browser on a runner; the service flag suppresses opening one.
+          SPACES_SERVICE: '1'
+        run: |
+          node bin/spaces.js --port 3457 > server.log 2>&1 &
+          SERVER_PID=$!
+          stop_server() {
+            node bin/spaces.js stop --port 3457 || true
+            kill $SERVER_PID 2>/dev/null || true
+          }
+
+          code() { curl -s -o /dev/null -w "%{http_code}" "$1"; }
+
+          # Wait for server to be ready (up to 60 seconds)
+          for i in $(seq 1 60); do
+            if [ "$(code http://localhost:3457/agent-guide.md)" = "200" ]; then
+              echo "Server is up after ${i}s"
+              break
+            fi
+            if [ $i -eq 60 ]; then
+              echo "Server failed to start within 60s"
+              cat server.log
+              stop_server
+              exit 1
+            fi
+            sleep 1
+          done
+
+          status=0
+          check() {
+            got=$(code "$2")
+            if [ "$got" = "$1" ]; then
+              echo "ok   $2 -> $got"
+            else
+              echo "FAIL $2 -> $got (expected $1)"
+              status=1
+            fi
+          }
+          check 200 http://localhost:3457/agent-guide.md
+          check 401 http://localhost:3457/api/config/
+
+          if grep -q "Cannot find module" server.log; then
+            echo "FAIL a module is missing at runtime:"
+            grep -n "Cannot find module" server.log
+            status=1
+          fi
+
+          stop_server
+          [ $status -eq 0 ] || { cat server.log; exit 1; }
+          echo "All health checks passed"
+
+  rust:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      # Keep this version in sync with the repo-root rust-toolchain.toml: it
+      # overrides `rustup default` for every step below (working-directory: tui),
+      # so pinning stable here would install a toolchain that never actually runs.
+      - uses: dtolnay/rust-toolchain@1.97.1
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: tui
+      - name: fmt
+        run: cargo fmt --check
+        working-directory: tui
+      - name: clippy
+        run: cargo clippy --all-targets -- -D warnings
+        working-directory: tui
+      - name: test
+        run: cargo test
+        working-directory: tui
+      # The integration test below boots the real Node runtime, which needs
+      # better-sqlite3/node-pty/ws from node_modules — neither of which this
+      # job installs otherwise. Guarded the same as the integration step
+      # itself so the macOS/Windows matrix legs don't pay for a Node install
+      # they never use.
+      - uses: actions/setup-node@v4
+        if: runner.os == 'Linux'
+        with:
+          node-version: 20
+      - name: install node dependencies
+        if: runner.os == 'Linux'
+        run: npm ci
+      - name: integration test against the runtime
+        if: runner.os == 'Linux'
+        run: cargo test -p spaces-tui --test live_runtime -- --ignored
+        working-directory: tui
+
+  tui-binaries:
+    # Despite the per-target matrix below, every leg here is a native build,
+    # not a cross-compile: ubuntu-22.04-arm is arm64, macos-15-intel is
+    # x86_64, and macos-latest is arm64. No cross-linker setup is needed.
+    # This job only proves all five targets build; publish.yml ships them.
+    #
+    # Linux binaries are built on 22.04, not 24.04: a binary links against
+    # the glibc it was built with and refuses to start on anything older, so
+    # the oldest supported runner gives the widest reach.
+    #
+    # macos-15-intel is the last Intel macOS image GitHub offers (macos-13
+    # was retired). When it goes too, build x86_64-apple-darwin on
+    # macos-latest instead: the toolchain step already adds the target, and
+    # Apple's linker cross-links x86_64 from arm64 with no extra setup.
+    #
+    # `pkg` is the directory under npm/ (also the artifact name); the npm
+    # package name, @jlongo78/<pkg>, is read from its package.json.
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: x86_64-unknown-linux-gnu,  runner: ubuntu-22.04,     pkg: agent-spaces-tui-linux-x64 }
+          - { target: aarch64-unknown-linux-gnu, runner: ubuntu-22.04-arm, pkg: agent-spaces-tui-linux-arm64 }
+          - { target: x86_64-apple-darwin,       runner: macos-15-intel,   pkg: agent-spaces-tui-darwin-x64 }
+          - { target: aarch64-apple-darwin,      runner: macos-latest,     pkg: agent-spaces-tui-darwin-arm64 }
+          - { target: x86_64-pc-windows-msvc,    runner: windows-latest,   pkg: agent-spaces-tui-win32-x64 }
+    steps:
+      - uses: actions/checkout@v4
+      # Keep this version in sync with the repo-root rust-toolchain.toml (see
+      # the comment on the `rust` job above): it overrides `rustup default`
+      # for every step below (working-directory: tui), so pinning stable
+      # here would install a toolchain that never runs, and cargo would
+      # silently re-download 1.97.1 on every job — a download rust-cache
+      # does not cache, since it only covers ~/.cargo and target/, not
+      # ~/.rustup/toolchains.
+      - uses: dtolnay/rust-toolchain@1.97.1
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: tui
+      - name: build
+        run: cargo build --release --target ${{ matrix.target }} -p spaces-tui
+        working-directory: tui
+      # upload-artifact does not preserve the executable bit, which would
+      # make "binary present but not executable" (EACCES) the most likely
+      # real packaging failure. Tarring first carries the mode through.
+      # The tar also replaces a `spaces-tui*` glob that swept up the build
+      # fingerprint file (`spaces-tui.d`) and, on Windows, the debug
+      # symbols (`spaces-tui.pdb`) alongside the binary.
+      #
+      # On Windows $RUNNER_TEMP is `D:\a\_temp`, and Git Bash's GNU tar reads
+      # the `D:` of an archive name as a remote host ("Cannot connect to D:").
+      # cygpath turns it into /d/a/_temp; macOS and Linux have no cygpath and
+      # need nothing (and bsdtar has no --force-local to fall back on).
+      - name: package binary
+        shell: bash
+        run: |
+          out="$RUNNER_TEMP/${{ matrix.pkg }}.tar.gz"
+          if command -v cygpath >/dev/null 2>&1; then out="$(cygpath -u "$out")"; fi
+          cd tui/target/${{ matrix.target }}/release
+          if [ -f spaces-tui.exe ]; then
+            tar -czf "$out" spaces-tui.exe
+          else
+            chmod +x spaces-tui
+            tar -czf "$out" spaces-tui
+          fi
+          tar -tzvf "$out"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.pkg }}
+          path: ${{ runner.temp }}/${{ matrix.pkg }}.tar.gz
+          if-no-files-found: error

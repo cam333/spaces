@@ -1,0 +1,34 @@
+{
+  "agent": "gemini",
+  "version": "2026.08.07.1",
+  "minEngineVersion": 1,
+  "rules": [
+    {
+      "id": "confirm_prompt",
+      "state": "blocked",
+      "priority": 950,
+      "region": "bottom_non_empty_lines(8)",
+      "any": [
+        { "contains": ["apply this change?"] },
+        { "contains": ["allow execution"] },
+        { "lineRegex": ["^\\s*[\\u276F>]?\\s*1\\.\\s*[Yy]es"] }
+      ]
+    },
+    {
+      "id": "spinner_working",
+      "state": "working",
+      "priority": 700,
+      "region": "bottom_non_empty_lines(4)",
+      "any": [
+        { "lineRegex": ["[\\u2800-\\u28FF]\\s"] }
+      ]
+    },
+    {
+      "id": "idle_prompt",
+      "state": "idle",
+      "priority": 400,
+      "region": "bottom_non_empty_lines(3)",
+      "lineRegex": ["^\\s*[\\u276F>]\\s*$"]
+    }
+  ]
+}

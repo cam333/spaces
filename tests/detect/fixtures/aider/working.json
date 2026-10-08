@@ -1,0 +1,11 @@
+{
+  "agent": "aider",
+  "expectedState": "working",
+  "snapshot": {
+    "rows": ["Applying edit to src/app.py", "Tokens: 4.2k sent, 310 received. Cost: $0.02"],
+    "title": "aider",
+    "progress": null,
+    "cols": 80,
+    "rows_count": 2
+  }
+}

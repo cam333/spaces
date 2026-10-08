@@ -1,0 +1,17 @@
+{
+  "agent": "claude",
+  "expectedState": "working",
+  "snapshot": {
+    "rows": [
+      "  Editing 3 files, 128 lines changed",
+      "╭───╮",
+      "│ > │",
+      "╰───╯",
+      "Reticulating splines… (esc to interrupt)"
+    ],
+    "title": "Claude",
+    "progress": null,
+    "cols": 80,
+    "rows_count": 5
+  }
+}

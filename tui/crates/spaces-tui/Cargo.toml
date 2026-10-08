@@ -1,0 +1,29 @@
+[package]
+name = "spaces-tui"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "spaces-tui"
+path = "src/main.rs"
+
+[dependencies]
+spaces-proto = { path = "../spaces-proto" }
+serde_json.workspace = true
+tokio = { workspace = true, features = ["fs"] }
+futures-util.workspace = true
+ratatui = "0.29"
+crossterm = { version = "0.28", features = ["event-stream"] }
+alacritty_terminal = "0.24"
+base64 = "0.22"
+syntect = { version = "5.2", default-features = false, features = ["default-syntaxes", "default-themes", "regex-fancy", "parsing"] }
+
+[dev-dependencies]
+# `test-util` only — it brings tokio's pausable clock, which is what lets
+# the reattach-backoff tests assert "did not fire early" deterministically
+# instead of racing a real timer. Deliberately not in `[dependencies]`:
+# linking it into the shipped binary would let a stray `tokio::time::pause`
+# freeze the real event loop.
+tokio = { version = "1", features = ["test-util"] }

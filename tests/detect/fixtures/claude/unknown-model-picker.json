@@ -1,0 +1,17 @@
+{
+  "agent": "claude",
+  "expectedState": "unknown",
+  "snapshot": {
+    "rows": [
+      " Select model",
+      " Switch between Claude models",
+      " ❯ 1. Default (recommended)  Opus",
+      "   2. Sonnet",
+      " enter to set as default · esc to cancel · ↑/↓ to navigate"
+    ],
+    "title": "Claude",
+    "progress": null,
+    "cols": 80,
+    "rows_count": 5
+  }
+}

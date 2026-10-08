@@ -1,0 +1,11 @@
+{
+  "agent": "gemini",
+  "expectedState": "idle",
+  "snapshot": {
+    "rows": ["Summary written.", "", "> "],
+    "title": "gemini",
+    "progress": null,
+    "cols": 80,
+    "rows_count": 3
+  }
+}

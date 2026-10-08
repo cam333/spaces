@@ -1,0 +1,25 @@
+# Spaces
+
+> Spaces is an open-source agent workspace manager: a self-hosted server that
+> runs AI coding agents (Claude Code, Codex, Gemini, and more) in terminal
+> panes grouped into workspaces, tracks each agent's state (working, blocked,
+> idle, done), notifies you when one needs attention, and serves web, terminal
+> (TUI), and VR clients from the same runtime.
+
+Spaces is Apache-2.0 licensed, installs via `npm install -g @jlongo78/agent-spaces`, and
+runs with the `spaces` command. Agents inside panes get a message bus
+(`spaces-msg` CLI and the `spaces-bus` MCP server) for agent-to-agent and
+agent-to-human communication.
+
+## Docs
+
+- [Agent guide](/agent-guide.md): how a coding agent inside a Spaces pane
+  identifies its environment and uses the message bus
+- [Getting started](https://raw.githubusercontent.com/jlongo78/agent-spaces/main/docs/getting-started.md): install and first run
+- [Architecture](https://raw.githubusercontent.com/jlongo78/agent-spaces/main/docs/architecture.md): server, runtime, clients, and how they fit
+- [Server install](https://raw.githubusercontent.com/jlongo78/agent-spaces/main/docs/server-install.md): multiuser and service installation
+
+## Optional
+
+- [Source repository](https://github.com/jlongo78/agent-spaces)
+- [Homepage](http://www.agentspaces.co)

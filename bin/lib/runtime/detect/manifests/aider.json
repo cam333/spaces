@@ -1,0 +1,36 @@
+{
+  "agent": "aider",
+  "version": "2026.08.07.1",
+  "minEngineVersion": 1,
+  "rules": [
+    {
+      "id": "confirm_prompt",
+      "state": "blocked",
+      "priority": 900,
+      "region": "bottom_non_empty_lines(4)",
+      "any": [
+        { "lineRegex": ["\\[[Yy]es/[Nn]o.*\\]\\s*:?\\s*$"] },
+        { "lineRegex": ["\\([Yy]/[Nn]\\)\\s*:?\\s*$"] },
+        { "contains": ["add the files to the chat?"] }
+      ]
+    },
+    {
+      "id": "working_indicator",
+      "state": "working",
+      "priority": 700,
+      "region": "bottom_non_empty_lines(4)",
+      "any": [
+        { "contains": ["thinking"] },
+        { "contains": ["applying edit"] },
+        { "lineRegex": ["^\\s*Tokens:.*Cost:"] }
+      ]
+    },
+    {
+      "id": "idle_prompt",
+      "state": "idle",
+      "priority": 400,
+      "region": "bottom_non_empty_lines(2)",
+      "lineRegex": ["^\\s*(architect|code|ask)?\\s*>\\s*$"]
+    }
+  ]
+}

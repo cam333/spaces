@@ -1,0 +1,16 @@
+{
+  "agent": "claude",
+  "expectedState": "working",
+  "snapshot": {
+    "rows": [
+      "✻ Waiting for 2 background agents to finish",
+      "╭────────────────────────────╮",
+      "│ ❯                          │",
+      "╰────────────────────────────╯"
+    ],
+    "title": "Claude",
+    "progress": null,
+    "cols": 80,
+    "rows_count": 4
+  }
+}

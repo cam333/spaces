@@ -1,0 +1,60 @@
+{
+  "agent": "codex",
+  "version": "2026.08.07.1",
+  "minEngineVersion": 1,
+  "rules": [
+    {
+      "id": "osc_title_blocked",
+      "state": "blocked",
+      "priority": 1000,
+      "region": "osc_title",
+      "contains": ["action required"]
+    },
+    {
+      "id": "approval_prompt",
+      "state": "blocked",
+      "priority": 950,
+      "region": "bottom_non_empty_lines(6)",
+      "any": [
+        { "contains": ["allow command?"] },
+        { "contains": ["press enter to confirm"] },
+        { "contains": ["enter to submit answer"] },
+        { "contains": ["[y/n]"] }
+      ]
+    },
+    {
+      "id": "transcript_viewer",
+      "state": "unknown",
+      "priority": 900,
+      "region": "whole_visible",
+      "skipStateUpdate": true,
+      "contains": ["q to quit"],
+      "any": [
+        { "contains": ["to scroll"] },
+        { "contains": ["pgup/pgdn"] }
+      ]
+    },
+    {
+      "id": "osc_title_working",
+      "state": "working",
+      "priority": 800,
+      "region": "osc_title",
+      "regex": ["^[\\u2800-\\u28FF]"]
+    },
+    {
+      "id": "working_footer",
+      "state": "working",
+      "priority": 600,
+      "region": "bottom_non_empty_lines(3)",
+      "lineRegex": ["[\\u2022\\u25E6]\\s+Working\\b"],
+      "not": [{ "contains": ["conversation interrupted"] }]
+    },
+    {
+      "id": "idle_prompt",
+      "state": "idle",
+      "priority": 400,
+      "region": "bottom_non_empty_lines(3)",
+      "lineRegex": ["^\\s*[\\u276F>]\\s*$"]
+    }
+  ]
+}

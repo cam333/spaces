@@ -1,0 +1,17 @@
+{
+  "agent": "claude",
+  "expectedState": "idle",
+  "snapshot": {
+    "rows": [
+      "  Done — 3 files changed.",
+      "╭──────────────────────────────╮",
+      "│ >                            │",
+      "╰──────────────────────────────╯",
+      "  ? for shortcuts"
+    ],
+    "title": "✳ Claude",
+    "progress": "4;0",
+    "cols": 80,
+    "rows_count": 5
+  }
+}

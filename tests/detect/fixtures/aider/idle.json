@@ -1,0 +1,11 @@
+{
+  "agent": "aider",
+  "expectedState": "idle",
+  "snapshot": {
+    "rows": ["Applied edit to src/app.py", "", "code> "],
+    "title": "aider",
+    "progress": null,
+    "cols": 80,
+    "rows_count": 3
+  }
+}

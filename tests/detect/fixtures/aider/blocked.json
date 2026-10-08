@@ -1,0 +1,11 @@
+{
+  "agent": "aider",
+  "expectedState": "blocked",
+  "snapshot": {
+    "rows": ["src/utils.py is not in the chat.", "Add the files to the chat? [Yes/No/All/Skip]: "],
+    "title": "aider",
+    "progress": null,
+    "cols": 80,
+    "rows_count": 2
+  }
+}

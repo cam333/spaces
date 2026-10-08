@@ -1,0 +1,18 @@
+{
+  "eventTypes": [
+    "pane.created",
+    "pane.removed",
+    "pane.moved",
+    "workspace.created",
+    "workspace.updated",
+    "workspace.removed"
+  ],
+  "sampleEvents": [
+    { "seq": 1, "type": "pane.created", "payload": { "paneId": "abc", "workspaceId": "w1", "agentType": "claude", "cwd": "C:\\work" }, "ts": 1 },
+    { "seq": 2, "type": "pane.removed", "payload": { "paneId": "abc" }, "ts": 2 },
+    { "seq": 3, "type": "pane.moved", "payload": { "paneId": "abc", "workspaceId": "w2" }, "ts": 3 },
+    { "seq": 4, "type": "workspace.created", "payload": { "workspaceId": "w1", "name": "frontend" }, "ts": 4 },
+    { "seq": 5, "type": "workspace.updated", "payload": { "workspaceId": "w1", "name": "api" }, "ts": 5 },
+    { "seq": 6, "type": "workspace.removed", "payload": { "workspaceId": "w1", "closedPanes": [] }, "ts": 6 }
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "agent": "claude",
+  "expectedState": "working",
+  "snapshot": {
+    "rows": [
+      "● Reading src/lib/runtime/state.js",
+      "  Considering the debounce path"
+    ],
+    "title": "◐ payments-service refactor",
+    "progress": null,
+    "cols": 80,
+    "rows_count": 2
+  }
+}

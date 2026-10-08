@@ -1,0 +1,25 @@
+{
+  "name": "@jlongo78/agent-spaces-tui-linux-arm64",
+  "version": "1.0.0",
+  "description": "Terminal client binary for linux-arm64",
+  "license": "Apache-2.0",
+  "author": "John Longo",
+  "homepage": "https://www.agentspaces.co",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jlongo78/agent-spaces.git",
+    "directory": "npm/agent-spaces-tui-linux-arm64"
+  },
+  "os": [
+    "linux"
+  ],
+  "cpu": [
+    "arm64"
+  ],
+  "files": [
+    "bin/"
+  ],
+  "publishConfig": {
+    "access": "public"
+  }
+}

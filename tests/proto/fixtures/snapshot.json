@@ -1,0 +1,4 @@
+{
+  "send": { "id": "r1", "method": "session.snapshot", "params": {} },
+  "expectResultKeys": ["protocolVersion", "nodeId", "seq", "workspaces", "panes"]
+}

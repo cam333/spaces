@@ -1,0 +1,11 @@
+{
+  "agent": "gemini",
+  "expectedState": "working",
+  "snapshot": {
+    "rows": ["Analyzing repository…", "⠸ Generating (esc to cancel)"],
+    "title": "gemini",
+    "progress": null,
+    "cols": 80,
+    "rows_count": 2
+  }
+}

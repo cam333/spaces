@@ -1,0 +1,11 @@
+{
+  "validUpFrames": [
+    { "t": "i", "data": "echo hi\r" },
+    { "t": "r", "cols": 120, "rows": 30 }
+  ],
+  "invalidUpFrames": [
+    { "t": "x" },
+    { "t": "i" },
+    { "t": "r", "cols": 0, "rows": 30 }
+  ]
+}

@@ -1,0 +1,11 @@
+{
+  "agent": "gemini",
+  "expectedState": "blocked",
+  "snapshot": {
+    "rows": ["Apply this change? (esc to cancel)", "1. Yes  2. No"],
+    "title": "gemini",
+    "progress": null,
+    "cols": 80,
+    "rows_count": 2
+  }
+}

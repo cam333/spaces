@@ -1,0 +1,921 @@
+import crypto from 'crypto';
+import { getDb } from './schema';
+import type { SessionWithMeta, Project, Workspace, Tag, SearchResult, WorkspaceTodo } from '@/types/claude';
+
+// ─── Projects ───────────────────────────────────────────────
+
+export function upsertProject(project: { id: string; name: string; path: string; claudePath: string; agentType?: string }) {
+  const db = getDb();
+  db.prepare(`
+    INSERT INTO projects (id, name, path, claude_path, agent_path, agent_type)
+    VALUES (?, ?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET name=excluded.name, path=excluded.path, claude_path=excluded.claude_path, agent_path=excluded.agent_path, agent_type=excluded.agent_type
+  `).run(project.id, project.name, project.path, project.claudePath, project.claudePath, project.agentType || 'claude');
+}
+
+export function getAllProjects(): Project[] {
+  const db = getDb();
+  return db.prepare(`
+    SELECT p.id, p.name, p.path, p.claude_path as claudePath,
+      p.agent_type as agentType,
+      COUNT(s.id) as sessionCount,
+      MAX(s.modified) as lastActivity
+    FROM projects p
+    LEFT JOIN sessions s ON s.project_id = p.id
+    GROUP BY p.id
+    ORDER BY lastActivity DESC
+  `).all() as Project[];
+}
+
+// ─── Sessions ───────────────────────────────────────────────
+
+export function upsertSession(session: {
+  id: string;
+  sessionId: string;
+  projectId: string;
+  firstPrompt: string;
+  summary: string;
+  messageCount: number;
+  created: string;
+  modified: string;
+  gitBranch: string;
+  projectPath: string;
+  fullPath: string;
+  agentType?: string;
+}) {
+  const db = getDb();
+  db.prepare(`
+    INSERT INTO sessions (id, session_id, project_id, first_prompt, summary, message_count, created, modified, git_branch, project_path, full_path, agent_type)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      first_prompt = CASE WHEN excluded.first_prompt != '' THEN excluded.first_prompt ELSE sessions.first_prompt END,
+      summary = CASE WHEN excluded.summary != '' THEN excluded.summary ELSE sessions.summary END,
+      message_count = CASE WHEN excluded.message_count > sessions.message_count THEN excluded.message_count ELSE sessions.message_count END,
+      modified = CASE WHEN excluded.modified != '' THEN excluded.modified ELSE sessions.modified END,
+      git_branch = CASE WHEN excluded.git_branch != '' THEN excluded.git_branch ELSE sessions.git_branch END,
+      full_path = CASE WHEN excluded.full_path != '' THEN excluded.full_path ELSE sessions.full_path END,
+      agent_type=excluded.agent_type
+  `).run(
+    session.id, session.sessionId, session.projectId,
+    session.firstPrompt, session.summary, session.messageCount,
+    session.created, session.modified, session.gitBranch,
+    session.projectPath, session.fullPath, session.agentType || 'claude'
+  );
+
+  reconcileWorkspaceSessionLinks(session.id);
+}
+
+interface SessionQueryParams {
+  projectId?: string;
+  projectPath?: string;
+  starred?: boolean;
+  tagId?: number;
+  search?: string;
+  agentType?: string;
+  sortBy?: string;
+  sortDir?: string;
+  offset?: number;
+  limit?: number;
+}
+
+export function getSessions(params: SessionQueryParams = {}): { sessions: SessionWithMeta[]; total: number } {
+  const db = getDb();
+  const {
+    projectId,
+    projectPath,
+    starred,
+    tagId,
+    search,
+    sortBy = 'modified',
+    sortDir = 'DESC',
+    offset = 0,
+    limit = 50,
+  } = params;
+
+  const where: string[] = [];
+  const queryParams: (string | number)[] = [];
+
+  if (projectId) {
+    where.push('s.project_id = ?');
+    queryParams.push(projectId);
+  }
+  if (projectPath) {
+    where.push('s.project_path = ?');
+    queryParams.push(projectPath);
+  }
+  if (starred !== undefined) {
+    where.push('s.starred = ?');
+    queryParams.push(starred ? 1 : 0);
+  }
+  if (tagId) {
+    where.push('EXISTS (SELECT 1 FROM session_tags st WHERE st.session_id = s.id AND st.tag_id = ?)');
+    queryParams.push(tagId);
+  }
+  if (search) {
+    where.push('(s.first_prompt LIKE ? OR s.summary LIKE ? OR s.custom_name LIKE ?)');
+    const pattern = `%${search}%`;
+    queryParams.push(pattern, pattern, pattern);
+  }
+  if (params.agentType) {
+    where.push('s.agent_type = ?');
+    queryParams.push(params.agentType);
+  }
+
+  const whereClause = where.length > 0 ? `WHERE ${where.join(' AND ')}` : '';
+
+  const allowedSorts: Record<string, string> = {
+    created: 's.created',
+    modified: 's.modified',
+    messages: 's.message_count',
+    name: "COALESCE(s.custom_name, s.summary, s.first_prompt)",
+  };
+  const sortColumn = allowedSorts[sortBy] || 's.modified';
+  const direction = sortDir === 'ASC' ? 'ASC' : 'DESC';
+
+  const countRow = db.prepare(`SELECT COUNT(*) as total FROM sessions s ${whereClause}`).get(...queryParams) as { total: number };
+
+  const rows = db.prepare(`
+    SELECT s.id, s.session_id as sessionId, s.project_id as projectId,
+      p.name as projectName, s.first_prompt as firstPrompt,
+      s.summary, s.message_count as messageCount,
+      s.created, s.modified, s.git_branch as gitBranch,
+      s.project_path as projectPath, s.full_path as fullPath,
+      s.starred, s.custom_name as customName, s.notes,
+      s.agent_type as agentType
+    FROM sessions s
+    LEFT JOIN projects p ON p.id = s.project_id
+    ${whereClause}
+    ORDER BY ${sortColumn} ${direction}
+    LIMIT ? OFFSET ?
+  `).all(...queryParams, limit, offset) as SessionWithMeta[];
+
+  // Fetch tags and workspaces for each session
+  const tagStmt = db.prepare(`
+    SELECT t.name FROM tags t
+    JOIN session_tags st ON st.tag_id = t.id
+    WHERE st.session_id = ?
+  `);
+  const wsStmt = db.prepare(`
+    SELECT w.id, w.name, w.color FROM workspaces w
+    JOIN workspace_sessions ws ON ws.workspace_id = w.id
+    WHERE ws.session_id = ?
+  `);
+
+  for (const row of rows) {
+    const tags = tagStmt.all(row.id) as { name: string }[];
+    row.tags = tags.map(t => t.name);
+    row.workspaces = wsStmt.all(row.id) as { id: number; name: string; color: string }[];
+    row.starred = !!row.starred;
+  }
+
+  return { sessions: rows, total: countRow.total };
+}
+
+export function getSessionById(id: string): SessionWithMeta | null {
+  const db = getDb();
+  const row = db.prepare(`
+    SELECT s.id, s.session_id as sessionId, s.project_id as projectId,
+      p.name as projectName, s.first_prompt as firstPrompt,
+      s.summary, s.message_count as messageCount,
+      s.created, s.modified, s.git_branch as gitBranch,
+      s.project_path as projectPath, s.full_path as fullPath,
+      s.starred, s.custom_name as customName, s.notes,
+      s.agent_type as agentType
+    FROM sessions s
+    LEFT JOIN projects p ON p.id = s.project_id
+    WHERE s.id = ? OR s.session_id = ?
+  `).get(id, id) as SessionWithMeta | undefined;
+
+  if (!row) return null;
+
+  const tags = db.prepare(`
+    SELECT t.name FROM tags t
+    JOIN session_tags st ON st.tag_id = t.id
+    WHERE st.session_id = ?
+  `).all(row.id) as { name: string }[];
+
+  row.tags = tags.map(t => t.name);
+  row.starred = !!row.starred;
+
+  return row;
+}
+
+export function toggleStar(sessionId: string): boolean {
+  const db = getDb();
+  const current = db.prepare('SELECT starred FROM sessions WHERE id = ? OR session_id = ?').get(sessionId, sessionId) as { starred: number } | undefined;
+  if (!current) return false;
+  const newValue = current.starred ? 0 : 1;
+  db.prepare('UPDATE sessions SET starred = ? WHERE id = ? OR session_id = ?').run(newValue, sessionId, sessionId);
+  return !!newValue;
+}
+
+export function updateSessionNotes(sessionId: string, notes: string) {
+  const db = getDb();
+  db.prepare('UPDATE sessions SET notes = ? WHERE id = ? OR session_id = ?').run(notes, sessionId, sessionId);
+}
+
+// ─── Workspaces ─────────────────────────────────────────────
+
+export function createWorkspace(name: string, description?: string, color?: string): Workspace {
+  const db = getDb();
+  const result = db.prepare('INSERT INTO workspaces (name, description, color) VALUES (?, ?, ?)').run(
+    name, description || '', color || '#6366f1'
+  );
+  return { id: Number(result.lastInsertRowid), name, description: description || '', color: color || '#6366f1', created: new Date().toISOString() };
+}
+
+export function getAllWorkspaces(): Workspace[] {
+  const db = getDb();
+  return db.prepare(`
+    SELECT w.*, COUNT(ws.session_id) as sessionCount
+    FROM workspaces w
+    LEFT JOIN workspace_sessions ws ON ws.workspace_id = w.id
+    GROUP BY w.id
+    ORDER BY w.created DESC
+  `).all() as Workspace[];
+}
+
+export function addSessionToWorkspace(workspaceId: number, sessionId: string) {
+  const db = getDb();
+  db.prepare('INSERT OR IGNORE INTO workspace_sessions (workspace_id, session_id) VALUES (?, ?)').run(workspaceId, sessionId);
+}
+
+export function removeSessionFromWorkspace(workspaceId: number, sessionId: string) {
+  const db = getDb();
+  db.prepare('DELETE FROM workspace_sessions WHERE workspace_id = ? AND session_id = ?').run(workspaceId, sessionId);
+}
+
+/**
+ * Reconcile workspace_sessions for any pane that already references this
+ * session and a workspace. Idempotent and FK-safe — the JOIN to sessions
+ * guarantees the foreign key exists before insert.
+ *
+ * Called from createPane/updatePane (when the pane gains a session+workspace
+ * pair) and from upsertSession (when a session row finally appears for a
+ * pane that was created earlier). Without this, panes started directly
+ * inside a workspace never get linked.
+ */
+export function reconcileWorkspaceSessionLinks(sessionId: string) {
+  const db = getDb();
+  db.prepare(`
+    INSERT OR IGNORE INTO workspace_sessions (workspace_id, session_id)
+    SELECT DISTINCT p.workspace_id, p.claude_session_id
+    FROM panes p
+    JOIN sessions s ON s.id = p.claude_session_id
+    WHERE p.claude_session_id = ? AND p.workspace_id IS NOT NULL
+  `).run(sessionId);
+}
+
+// ─── Tags ───────────────────────────────────────────────────
+
+export function createTag(name: string, color?: string): Tag {
+  const db = getDb();
+  const result = db.prepare('INSERT OR IGNORE INTO tags (name, color) VALUES (?, ?)').run(name, color || '#8b5cf6');
+  return { id: Number(result.lastInsertRowid), name, color: color || '#8b5cf6' };
+}
+
+export function getAllTags(): Tag[] {
+  const db = getDb();
+  return db.prepare('SELECT * FROM tags ORDER BY name').all() as Tag[];
+}
+
+export function addTagToSession(sessionId: string, tagName: string) {
+  const db = getDb();
+  let tag = db.prepare('SELECT id FROM tags WHERE name = ?').get(tagName) as { id: number } | undefined;
+  if (!tag) {
+    const result = db.prepare('INSERT INTO tags (name) VALUES (?)').run(tagName);
+    tag = { id: Number(result.lastInsertRowid) };
+  }
+  db.prepare('INSERT OR IGNORE INTO session_tags (session_id, tag_id) VALUES (?, ?)').run(sessionId, tag.id);
+}
+
+export function removeTagFromSession(sessionId: string, tagId: number) {
+  const db = getDb();
+  db.prepare('DELETE FROM session_tags WHERE session_id = ? AND tag_id = ?').run(sessionId, tagId);
+}
+
+export function removeTagFromSessionByName(sessionId: string, tagName: string) {
+  const db = getDb();
+  const tag = db.prepare('SELECT id FROM tags WHERE name = ?').get(tagName) as { id: number } | undefined;
+  if (tag) {
+    db.prepare('DELETE FROM session_tags WHERE session_id = ? AND tag_id = ?').run(sessionId, tag.id);
+  }
+}
+
+export function deleteTag(tagId: number) {
+  const db = getDb();
+  db.prepare('DELETE FROM session_tags WHERE tag_id = ?').run(tagId);
+  db.prepare('DELETE FROM tags WHERE id = ?').run(tagId);
+}
+
+export function updateTagColor(tagId: number, color: string) {
+  const db = getDb();
+  db.prepare('UPDATE tags SET color = ? WHERE id = ?').run(color, tagId);
+}
+
+export function getSessionTags(sessionId: string): Tag[] {
+  const db = getDb();
+  return db.prepare(`
+    SELECT t.id, t.name, t.color FROM tags t
+    JOIN session_tags st ON st.tag_id = t.id
+    WHERE st.session_id = ?
+    ORDER BY t.name
+  `).all(sessionId) as Tag[];
+}
+
+export function renameSession(sessionId: string, customName: string) {
+  const db = getDb();
+  db.prepare('UPDATE sessions SET custom_name = ? WHERE id = ? OR session_id = ?').run(customName || null, sessionId, sessionId);
+}
+
+// ─── Workspace Extras ───────────────────────────────────────
+
+export function deleteWorkspace(workspaceId: number) {
+  const db = getDb();
+  db.prepare('DELETE FROM workspace_sessions WHERE workspace_id = ?').run(workspaceId);
+  db.prepare('DELETE FROM workspaces WHERE id = ?').run(workspaceId);
+}
+
+export function updateWorkspace(workspaceId: number, data: { name?: string; description?: string; color?: string; collaboration?: boolean }) {
+  const db = getDb();
+  if (data.name !== undefined) db.prepare('UPDATE workspaces SET name = ? WHERE id = ?').run(data.name, workspaceId);
+  if (data.description !== undefined) db.prepare('UPDATE workspaces SET description = ? WHERE id = ?').run(data.description, workspaceId);
+  if (data.color !== undefined) db.prepare('UPDATE workspaces SET color = ? WHERE id = ?').run(data.color, workspaceId);
+  if (data.collaboration !== undefined) db.prepare('UPDATE workspaces SET collaboration = ? WHERE id = ?').run(data.collaboration ? 1 : 0, workspaceId);
+}
+
+export function getWorkspacesForSession(sessionId: string): { id: number; name: string; color: string }[] {
+  const db = getDb();
+  // Check workspace_sessions first (local sessions)
+  const fromWs = db.prepare(`
+    SELECT w.id, w.name, w.color FROM workspaces w
+    JOIN workspace_sessions ws ON ws.workspace_id = w.id
+    WHERE ws.session_id = ?
+  `).all(sessionId) as { id: number; name: string; color: string }[];
+  if (fromWs.length > 0) return fromWs;
+  // Fallback: check panes table (remote sessions stored via pane only)
+  return db.prepare(`
+    SELECT DISTINCT w.id, w.name, w.color FROM workspaces w
+    JOIN panes p ON p.workspace_id = w.id
+    WHERE p.claude_session_id = ?
+  `).all(sessionId) as { id: number; name: string; color: string }[];
+}
+
+export function getWorkspaceSessions(workspaceId: number): SessionWithMeta[] {
+  const db = getDb();
+  const rows = db.prepare(`
+    SELECT s.id, s.session_id as sessionId, s.project_id as projectId,
+      p.name as projectName, s.first_prompt as firstPrompt,
+      s.summary, s.message_count as messageCount,
+      s.created, s.modified, s.git_branch as gitBranch,
+      s.project_path as projectPath, s.full_path as fullPath,
+      s.starred, s.custom_name as customName, s.notes,
+      s.agent_type as agentType
+    FROM sessions s
+    JOIN workspace_sessions ws ON ws.session_id = s.id
+    LEFT JOIN projects p ON p.id = s.project_id
+    WHERE ws.workspace_id = ?
+    ORDER BY s.modified DESC
+  `).all(workspaceId) as SessionWithMeta[];
+
+  const tagStmt = db.prepare('SELECT t.name FROM tags t JOIN session_tags st ON st.tag_id = t.id WHERE st.session_id = ?');
+  for (const row of rows) {
+    row.tags = (tagStmt.all(row.id) as { name: string }[]).map(t => t.name);
+    row.starred = !!row.starred;
+  }
+  return rows;
+}
+
+export function getSessionWorkspaces(sessionId: string): Workspace[] {
+  const db = getDb();
+  return db.prepare(`
+    SELECT w.id, w.name, w.description, w.color, w.created, w.collaboration
+    FROM workspaces w
+    JOIN workspace_sessions ws ON ws.workspace_id = w.id
+    WHERE ws.session_id = ?
+  `).all(sessionId) as Workspace[];
+}
+
+// ─── Bulk Operations ────────────────────────────────────────
+
+export function bulkAddTag(sessionIds: string[], tagName: string) {
+  const db = getDb();
+  let tag = db.prepare('SELECT id FROM tags WHERE name = ?').get(tagName) as { id: number } | undefined;
+  if (!tag) {
+    const result = db.prepare('INSERT INTO tags (name) VALUES (?)').run(tagName);
+    tag = { id: Number(result.lastInsertRowid) };
+  }
+  const stmt = db.prepare('INSERT OR IGNORE INTO session_tags (session_id, tag_id) VALUES (?, ?)');
+  const run = db.transaction(() => {
+    for (const id of sessionIds) stmt.run(id, tag!.id);
+  });
+  run();
+}
+
+export function bulkAddToWorkspace(sessionIds: string[], workspaceId: number) {
+  const db = getDb();
+  const stmt = db.prepare('INSERT OR IGNORE INTO workspace_sessions (workspace_id, session_id) VALUES (?, ?)');
+  const run = db.transaction(() => {
+    for (const id of sessionIds) stmt.run(workspaceId, id);
+  });
+  run();
+}
+
+export function bulkStar(sessionIds: string[], starred: boolean) {
+  const db = getDb();
+  const stmt = db.prepare('UPDATE sessions SET starred = ? WHERE id = ?');
+  const run = db.transaction(() => {
+    for (const id of sessionIds) stmt.run(starred ? 1 : 0, id);
+  });
+  run();
+}
+
+// ─── FTS Search ─────────────────────────────────────────────
+
+export function upsertFtsContent(sessionId: string, content: string) {
+  const db = getDb();
+  db.prepare('DELETE FROM sessions_fts WHERE session_id = ?').run(sessionId);
+  db.prepare('INSERT INTO sessions_fts (session_id, content) VALUES (?, ?)').run(sessionId, content);
+}
+
+export function searchSessions(query: string, params: { projectId?: string; limit?: number; offset?: number } = {}): SearchResult[] {
+  const db = getDb();
+  const { projectId, limit = 20, offset = 0 } = params;
+
+  let sql = `
+    SELECT f.session_id as sessionId, snippet(sessions_fts, 1, '<mark>', '</mark>', '...', 40) as snippet,
+      rank, p.name as projectName, s.first_prompt as firstPrompt, s.created
+    FROM sessions_fts f
+    JOIN sessions s ON s.id = f.session_id OR s.session_id = f.session_id
+    LEFT JOIN projects p ON p.id = s.project_id
+    WHERE sessions_fts MATCH ?
+  `;
+  const queryParams: (string | number)[] = [query];
+
+  if (projectId) {
+    sql += ' AND s.project_id = ?';
+    queryParams.push(projectId);
+  }
+
+  sql += ' ORDER BY rank LIMIT ? OFFSET ?';
+  queryParams.push(limit, offset);
+
+  try {
+    return db.prepare(sql).all(...queryParams) as SearchResult[];
+  } catch {
+    // Fallback to LIKE search if FTS fails
+    return db.prepare(`
+      SELECT s.id as sessionId, substr(s.first_prompt, 1, 200) as snippet,
+        0 as rank, p.name as projectName, s.first_prompt as firstPrompt, s.created
+      FROM sessions s
+      LEFT JOIN projects p ON p.id = s.project_id
+      WHERE s.first_prompt LIKE ? OR s.summary LIKE ?
+      LIMIT ? OFFSET ?
+    `).all(`%${query}%`, `%${query}%`, limit, offset) as SearchResult[];
+  }
+}
+
+// ─── Sync State ─────────────────────────────────────────────
+
+export function getSyncState(filePath: string): { mtime: number; byteOffset: number } | null {
+  const db = getDb();
+  const row = db.prepare('SELECT mtime, byte_offset as byteOffset FROM sync_state WHERE file_path = ?').get(filePath) as { mtime: number; byteOffset: number } | undefined;
+  return row || null;
+}
+
+export function updateSyncState(filePath: string, mtime: number, byteOffset: number) {
+  const db = getDb();
+  db.prepare(`
+    INSERT INTO sync_state (file_path, mtime, byte_offset, last_synced)
+    VALUES (?, ?, ?, datetime('now'))
+    ON CONFLICT(file_path) DO UPDATE SET mtime=excluded.mtime, byte_offset=excluded.byte_offset, last_synced=datetime('now')
+  `).run(filePath, mtime, byteOffset);
+}
+
+// ─── Panes ─────────────────────────────────────────────────
+
+export interface ViewerTab {
+  path: string;
+  name: string;
+  ext: string;
+}
+
+export interface PaneData {
+  id: string;
+  title: string;
+  color: string;
+  cwd: string;
+  claudeSessionId: string | null;
+  agentType: string;
+  customCommand: string | null;
+  gridCol: number;
+  gridRow: number;
+  sortOrder: number;
+  shell: string | null;
+  created: string;
+  workspaceId: number | null;
+  isPopout: boolean;
+  winX: number | null;
+  winY: number | null;
+  winWidth: number | null;
+  winHeight: number | null;
+  nodeId: string | null;
+  isCollaborating: boolean;
+  diffBaselineSha: string | null;
+  customModelId: string | null;
+  viewerTabs: ViewerTab[];
+  viewerActiveTab: number;
+}
+
+const PANE_SELECT = `
+  id, title, color, cwd, claude_session_id as claudeSessionId,
+  agent_type as agentType, custom_command as customCommand,
+  grid_col as gridCol, grid_row as gridRow, sort_order as sortOrder,
+  shell, created, workspace_id as workspaceId,
+  is_popout as isPopout, win_x as winX, win_y as winY,
+  win_width as winWidth, win_height as winHeight,
+  node_id as nodeId,
+  is_collaborating as isCollaborating,
+  diff_baseline_sha as diffBaselineSha,
+  custom_model_id as customModelId,
+  viewer_tabs as viewerTabs,
+  viewer_active_tab as viewerActiveTab
+`;
+
+function mapPane(row: any): PaneData {
+  let tabs: ViewerTab[] = [];
+  if (typeof row.viewerTabs === 'string' && row.viewerTabs) {
+    try { tabs = JSON.parse(row.viewerTabs); } catch { tabs = []; }
+  }
+  return {
+    ...row,
+    isPopout: !!row.isPopout,
+    isCollaborating: !!row.isCollaborating,
+    viewerTabs: Array.isArray(tabs) ? tabs : [],
+    viewerActiveTab: row.viewerActiveTab ?? 0,
+  };
+}
+
+function normalizePane(row: any): PaneData {
+  return mapPane(row);
+}
+
+export function getPanesByWorkspace(workspaceId: number): PaneData[] {
+  const db = getDb();
+  const rows = db.prepare(`SELECT ${PANE_SELECT} FROM panes WHERE workspace_id = ? ORDER BY sort_order, created`).all(workspaceId);
+  return rows.map(normalizePane) as PaneData[];
+}
+
+export function getAllPanes(): PaneData[] {
+  const db = getDb();
+  const rows = db.prepare(`SELECT ${PANE_SELECT} FROM panes ORDER BY sort_order, created`).all();
+  return rows.map(normalizePane) as PaneData[];
+}
+
+export function getActivePanes(): PaneData[] {
+  const db = getDb();
+  const activeWs = db.prepare('SELECT id FROM workspaces WHERE is_active = 1').get() as { id: number } | undefined;
+  if (!activeWs) return [];
+  return getPanesByWorkspace(activeWs.id);
+}
+
+export function createPane(pane: {
+  id: string;
+  title: string;
+  color: string;
+  cwd: string;
+  claudeSessionId?: string;
+  agentType?: string;
+  customCommand?: string;
+  sortOrder?: number;
+  workspaceId?: number;
+  nodeId?: string;
+  isCollaborating?: boolean;
+  customModelId?: string | null;
+}): PaneData {
+  const db = getDb();
+  const maxOrder = db.prepare('SELECT MAX(sort_order) as m FROM panes').get() as { m: number | null };
+  const order = pane.sortOrder ?? ((maxOrder.m ?? -1) + 1);
+
+  // Default to active workspace if not specified
+  let wsId = pane.workspaceId;
+  if (wsId === undefined) {
+    const activeWs = db.prepare('SELECT id FROM workspaces WHERE is_active = 1').get() as { id: number } | undefined;
+    wsId = activeWs?.id;
+  }
+
+  // Capture git HEAD as diff baseline if cwd is a git repo
+  let baselineSha: string | null = null;
+  try {
+    const { execFileSync } = require('child_process');
+    baselineSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: pane.cwd, encoding: 'utf-8', timeout: 3000 }).trim();
+  } catch { /* not a git repo or git not available */ }
+
+  const sessId = (pane.claudeSessionId && pane.claudeSessionId !== 'new') ? pane.claudeSessionId : null;
+
+  db.prepare(`
+    INSERT INTO panes (id, title, color, cwd, claude_session_id, agent_type, custom_command, sort_order, workspace_id, node_id, is_collaborating, diff_baseline_sha, custom_model_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(pane.id, pane.title, pane.color, pane.cwd, sessId, pane.agentType || 'shell', pane.customCommand || null, order, wsId || null, pane.nodeId || null, pane.isCollaborating ? 1 : 0, baselineSha, pane.customModelId || null);
+
+  if (sessId && wsId && !pane.nodeId) reconcileWorkspaceSessionLinks(sessId);
+
+  return getPaneById(pane.id)!;
+}
+
+export function getPaneById(id: string): PaneData | null {
+  const db = getDb();
+  const row = db.prepare(`SELECT ${PANE_SELECT} FROM panes WHERE id = ?`).get(id) as any | null;
+  return row ? normalizePane(row) : null;
+}
+
+export function updatePane(id: string, data: {
+  title?: string;
+  color?: string;
+  cwd?: string;
+  claudeSessionId?: string | null;
+  agentType?: string;
+  customCommand?: string | null;
+  gridCol?: number;
+  gridRow?: number;
+  sortOrder?: number;
+  workspaceId?: number | null;
+  isPopout?: boolean;
+  winX?: number | null;
+  winY?: number | null;
+  winWidth?: number | null;
+  winHeight?: number | null;
+  isCollaborating?: boolean;
+  diffBaselineSha?: string | null;
+  customModelId?: string | null;
+  viewerTabs?: ViewerTab[];
+  viewerActiveTab?: number;
+}) {
+  const db = getDb();
+  const sets: string[] = [];
+  const vals: any[] = [];
+
+  if (data.title !== undefined) { sets.push('title = ?'); vals.push(data.title); }
+  if (data.color !== undefined) { sets.push('color = ?'); vals.push(data.color); }
+  if (data.cwd !== undefined) { sets.push('cwd = ?'); vals.push(data.cwd); }
+  if (data.claudeSessionId !== undefined) { sets.push('claude_session_id = ?'); vals.push(data.claudeSessionId); }
+  if (data.agentType !== undefined) { sets.push('agent_type = ?'); vals.push(data.agentType); }
+  if (data.customCommand !== undefined) { sets.push('custom_command = ?'); vals.push(data.customCommand); }
+  if (data.gridCol !== undefined) { sets.push('grid_col = ?'); vals.push(data.gridCol); }
+  if (data.gridRow !== undefined) { sets.push('grid_row = ?'); vals.push(data.gridRow); }
+  if (data.sortOrder !== undefined) { sets.push('sort_order = ?'); vals.push(data.sortOrder); }
+  if (data.workspaceId !== undefined) { sets.push('workspace_id = ?'); vals.push(data.workspaceId); }
+  if (data.isPopout !== undefined) { sets.push('is_popout = ?'); vals.push(data.isPopout ? 1 : 0); }
+  if (data.winX !== undefined) { sets.push('win_x = ?'); vals.push(data.winX); }
+  if (data.winY !== undefined) { sets.push('win_y = ?'); vals.push(data.winY); }
+  if (data.winWidth !== undefined) { sets.push('win_width = ?'); vals.push(data.winWidth); }
+  if (data.winHeight !== undefined) { sets.push('win_height = ?'); vals.push(data.winHeight); }
+  if ((data as any).nodeId !== undefined) { sets.push('node_id = ?'); vals.push((data as any).nodeId); }
+  if (data.isCollaborating !== undefined) { sets.push('is_collaborating = ?'); vals.push(data.isCollaborating ? 1 : 0); }
+  if (data.diffBaselineSha !== undefined) {
+    // Whitelist git SHA shape — diffBaselineSha is later passed as a positional
+    // argument to `git diff <sha> HEAD`; without this guard a value like
+    // "--output=/path/to/file" would be interpreted as a git option and
+    // git would write the diff content to an attacker-chosen path.
+    const sha = data.diffBaselineSha;
+    if (sha !== null && !/^[0-9a-f]{7,40}$/.test(sha)) {
+      throw new Error('Invalid diffBaselineSha (must be a git SHA hex)');
+    }
+    sets.push('diff_baseline_sha = ?'); vals.push(sha);
+  }
+  if (data.customModelId !== undefined) { sets.push('custom_model_id = ?'); vals.push(data.customModelId); }
+  if (data.viewerTabs !== undefined) {
+    if (!Array.isArray(data.viewerTabs)) throw new Error('viewerTabs must be an array');
+    const safe = data.viewerTabs
+      .filter((t): t is ViewerTab =>
+        !!t && typeof t.path === 'string' && typeof t.name === 'string' && typeof t.ext === 'string')
+      .map(t => ({ path: t.path, name: t.name, ext: t.ext }));
+    sets.push('viewer_tabs = ?'); vals.push(JSON.stringify(safe));
+  }
+  if (data.viewerActiveTab !== undefined) {
+    const n = Number(data.viewerActiveTab);
+    if (!Number.isInteger(n) || n < 0) throw new Error('viewerActiveTab must be a non-negative integer');
+    sets.push('viewer_active_tab = ?'); vals.push(n);
+  }
+
+  if (sets.length === 0) return;
+  vals.push(id);
+  db.prepare(`UPDATE panes SET ${sets.join(', ')} WHERE id = ?`).run(...vals);
+
+  if (data.claudeSessionId !== undefined || data.workspaceId !== undefined) {
+    const row = db.prepare(
+      'SELECT claude_session_id, workspace_id, node_id FROM panes WHERE id = ?'
+    ).get(id) as { claude_session_id: string | null; workspace_id: number | null; node_id: string | null } | undefined;
+    if (row?.claude_session_id && row.workspace_id && !row.node_id) {
+      reconcileWorkspaceSessionLinks(row.claude_session_id);
+    }
+  }
+}
+
+export function deletePane(id: string) {
+  const db = getDb();
+  db.prepare('DELETE FROM panes WHERE id = ?').run(id);
+}
+
+export function deletePanesByNodeId(nodeId: string) {
+  const db = getDb();
+  db.prepare('DELETE FROM panes WHERE node_id = ?').run(nodeId);
+}
+
+// ─── Workspace-as-Layout Operations ────────────────────────
+
+export function getActiveWorkspace(): Workspace | null {
+  const db = getDb();
+  return db.prepare('SELECT id, name, description, color, created, is_active as isActive, collaboration FROM workspaces WHERE is_active = 1').get() as Workspace | null;
+}
+
+export function switchWorkspace(workspaceId: number) {
+  const db = getDb();
+  db.prepare('UPDATE workspaces SET is_active = 0').run();
+  db.prepare('UPDATE workspaces SET is_active = 1 WHERE id = ?').run(workspaceId);
+}
+
+export function duplicateWorkspace(sourceId: number, newName: string, newColor?: string): { workspace: Workspace; panes: PaneData[] } {
+  const db = getDb();
+
+  // Create the new workspace
+  const src = db.prepare('SELECT * FROM workspaces WHERE id = ?').get(sourceId) as any;
+  const result = db.prepare(
+    'INSERT INTO workspaces (name, description, color, is_active) VALUES (?, ?, ?, 0)'
+  ).run(newName, src?.description || '', newColor || src?.color || '#6366f1');
+  const newWsId = Number(result.lastInsertRowid);
+
+  // Clone all panes from source workspace
+  const srcPanes = db.prepare('SELECT * FROM panes WHERE workspace_id = ?').all(sourceId) as any[];
+  const cloneStmt = db.prepare(`
+    INSERT INTO panes (id, title, color, cwd, claude_session_id, agent_type, custom_command, grid_col, grid_row, sort_order, shell, workspace_id, is_popout, win_x, win_y, win_width, win_height)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+
+  const cloneMany = db.transaction(() => {
+    for (const p of srcPanes) {
+      const newId = crypto.randomUUID();
+      cloneStmt.run(
+        newId, p.title, p.color, p.cwd, p.claude_session_id, p.agent_type || 'shell', p.custom_command || null,
+        p.grid_col, p.grid_row, p.sort_order, p.shell,
+        newWsId, 0, p.win_x, p.win_y, p.win_width, p.win_height
+      );
+    }
+  });
+  cloneMany();
+
+  const ws: Workspace = { id: newWsId, name: newName, description: src?.description || '', color: newColor || src?.color || '#6366f1', created: new Date().toISOString() };
+  const panes = getPanesByWorkspace(newWsId);
+  return { workspace: ws, panes };
+}
+
+export function deleteWorkspaceFull(workspaceId: number) {
+  const db = getDb();
+  // Delete all panes belonging to this workspace
+  db.prepare('DELETE FROM panes WHERE workspace_id = ?').run(workspaceId);
+  db.prepare('DELETE FROM workspaces WHERE id = ?').run(workspaceId);
+
+  // If deleted the active workspace, activate another
+  const anyActive = db.prepare('SELECT id FROM workspaces WHERE is_active = 1').get();
+  if (!anyActive) {
+    const first = db.prepare('SELECT id FROM workspaces ORDER BY id LIMIT 1').get() as { id: number } | undefined;
+    if (first) {
+      db.prepare('UPDATE workspaces SET is_active = 1 WHERE id = ?').run(first.id);
+    }
+  }
+}
+
+// ─── Analytics ──────────────────────────────────────────────
+
+export function getAnalyticsOverview() {
+  const db = getDb();
+  const totals = db.prepare(`
+    SELECT COUNT(*) as totalSessions, COALESCE(SUM(message_count), 0) as totalMessages
+    FROM sessions
+  `).get() as { totalSessions: number; totalMessages: number };
+
+  const projectCount = db.prepare('SELECT COUNT(*) as count FROM projects').get() as { count: number };
+
+  return {
+    totalSessions: totals.totalSessions,
+    totalMessages: totals.totalMessages,
+    totalProjects: projectCount.count,
+  };
+}
+
+export function getDailyActivity(days = 30): { date: string; sessionCount: number; messageCount: number; toolCallCount: number }[] {
+  const db = getDb();
+  return db.prepare(`
+    SELECT date(created) as date,
+           COUNT(*) as sessionCount,
+           COALESCE(SUM(message_count), 0) as messageCount,
+           0 as toolCallCount
+    FROM sessions
+    WHERE created >= date('now', ?)
+    GROUP BY date(created)
+    ORDER BY date(created)
+  `).all(`-${days} days`) as any[];
+}
+
+// ─── Workspace Todos ───────────────────────────────────────
+
+interface TodoRow {
+  id: number;
+  workspace_id: number;
+  text: string;
+  completed: number;
+  sort_order: number;
+  created: string;
+  completed_at: string | null;
+}
+
+function rowToTodo(r: TodoRow): WorkspaceTodo {
+  return {
+    id: r.id,
+    workspaceId: r.workspace_id,
+    text: r.text,
+    completed: !!r.completed,
+    sortOrder: r.sort_order,
+    created: r.created,
+    completedAt: r.completed_at,
+  };
+}
+
+export function getWorkspaceTodos(workspaceId: number): WorkspaceTodo[] {
+  const db = getDb();
+  const rows = db.prepare(`
+    SELECT id, workspace_id, text, completed, sort_order, created, completed_at
+    FROM workspace_todos
+    WHERE workspace_id = ?
+    ORDER BY completed ASC,
+             CASE WHEN completed = 0 THEN sort_order END ASC,
+             completed_at DESC
+  `).all(workspaceId) as TodoRow[];
+  return rows.map(rowToTodo);
+}
+
+export function addWorkspaceTodo(workspaceId: number, text: string): WorkspaceTodo {
+  const db = getDb();
+  const trimmed = text.trim();
+  if (!trimmed) throw new Error('todo text is required');
+
+  const maxRow = db.prepare(`
+    SELECT COALESCE(MAX(sort_order), -1) AS max_order
+    FROM workspace_todos
+    WHERE workspace_id = ? AND completed = 0
+  `).get(workspaceId) as { max_order: number };
+  const nextOrder = (maxRow?.max_order ?? -1) + 1;
+
+  const info = db.prepare(`
+    INSERT INTO workspace_todos (workspace_id, text, sort_order)
+    VALUES (?, ?, ?)
+  `).run(workspaceId, trimmed, nextOrder);
+
+  const row = db.prepare(`
+    SELECT id, workspace_id, text, completed, sort_order, created, completed_at
+    FROM workspace_todos WHERE id = ?
+  `).get(Number(info.lastInsertRowid)) as TodoRow;
+  return rowToTodo(row);
+}
+
+export function updateWorkspaceTodo(
+  workspaceId: number,
+  todoId: number,
+  data: { text?: string; completed?: boolean }
+): WorkspaceTodo | null {
+  const db = getDb();
+
+  if (data.text !== undefined) {
+    const trimmed = data.text.trim();
+    if (!trimmed) throw new Error('todo text cannot be empty');
+    db.prepare('UPDATE workspace_todos SET text = ? WHERE id = ? AND workspace_id = ?').run(trimmed, todoId, workspaceId);
+  }
+
+  if (data.completed !== undefined) {
+    if (data.completed) {
+      db.prepare(`
+        UPDATE workspace_todos
+        SET completed = 1, completed_at = datetime('now')
+        WHERE id = ? AND workspace_id = ?
+      `).run(todoId, workspaceId);
+    } else {
+      db.prepare(`
+        UPDATE workspace_todos
+        SET completed = 0, completed_at = NULL
+        WHERE id = ? AND workspace_id = ?
+      `).run(todoId, workspaceId);
+    }
+  }
+
+  const row = db.prepare(`
+    SELECT id, workspace_id, text, completed, sort_order, created, completed_at
+    FROM workspace_todos WHERE id = ? AND workspace_id = ?
+  `).get(todoId, workspaceId) as TodoRow | undefined;
+  return row ? rowToTodo(row) : null;
+}
+
+export function deleteWorkspaceTodo(workspaceId: number, todoId: number): void {
+  const db = getDb();
+  db.prepare('DELETE FROM workspace_todos WHERE id = ? AND workspace_id = ?').run(todoId, workspaceId);
+}
+

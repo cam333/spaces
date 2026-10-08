@@ -1,0 +1,11 @@
+{
+  "agent": "claude",
+  "expectedState": "working",
+  "snapshot": {
+    "rows": ["> refactor the auth module", "", "  Reticulating splines… (esc to interrupt)"],
+    "title": "⠋ Claude",
+    "progress": "4;3;",
+    "cols": 80,
+    "rows_count": 3
+  }
+}

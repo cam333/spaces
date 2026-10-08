@@ -1,0 +1,212 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { getAuthUser, withUser } from '@/lib/auth';
+import { getUserPaths, readConfig } from '@/lib/config';
+import fs from 'fs';
+import path from 'path';
+import os from 'os';
+import { checkFilePath } from '@/lib/file-policy';
+
+export const dynamic = 'force-dynamic';
+
+const IMAGE_EXTS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.ico', '.bmp', '.webp', '.svg']);
+
+/**
+ * Resolve a user-supplied path and verify it may be used — see
+ * src/lib/file-policy.ts. Returns the resolved path to operate on, or null.
+ * Callers MUST treat null as a 404 with no filesystem access.
+ */
+function resolveAllowedPath(input: string, user: string): string | null {
+  const paths = getUserPaths(user);
+  const cfg = readConfig(user);
+  return checkFilePath(input, {
+    homes: [path.dirname(paths.spacesDir), os.homedir()],
+    roots: [...cfg.devDirectories, paths.claudeProjectsDir, paths.codexSessionsDir, paths.geminiChatsBaseDir]
+      .filter(Boolean),
+  });
+}
+
+const BINARY_EXTS = new Set([
+  '.woff', '.woff2', '.ttf', '.eot', '.otf',
+  '.zip', '.gz', '.tar', '.rar', '.7z',
+  '.exe', '.dll', '.so', '.dylib', '.node',
+  '.mp3', '.mp4', '.wav', '.avi', '.mov',
+  '.db', '.sqlite', '.sqlite3',
+]);
+
+const IGNORE = new Set(['node_modules', '.git', '.next', '__pycache__', '.turbo', 'dist', '.cache']);
+
+const MIME: Record<string, string> = {
+  '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif', '.ico': 'image/x-icon', '.bmp': 'image/bmp',
+  '.webp': 'image/webp', '.svg': 'image/svg+xml',
+  '.pdf': 'application/pdf',
+};
+
+// Max text file size for JSON response (5MB)
+const MAX_TEXT_SIZE = 5 * 1024 * 1024;
+// Max image size for base64 response (20MB)
+const MAX_IMAGE_SIZE = 20 * 1024 * 1024;
+
+export async function GET(request: NextRequest) {
+  const user = getAuthUser(request);
+  return withUser(user, async () => {
+    const dir = request.nextUrl.searchParams.get('path');
+    const file = request.nextUrl.searchParams.get('file');
+    const raw = request.nextUrl.searchParams.get('raw');
+    const limit = parseInt(request.nextUrl.searchParams.get('limit') || '2000', 10);
+
+    // Serve raw file (for images in <img> tags)
+    if (raw) {
+      try {
+        const resolved = resolveAllowedPath(raw, user);
+        if (!resolved) return new NextResponse('Not found', { status: 404 });
+        const ext = path.extname(resolved).toLowerCase();
+        const stat = fs.statSync(resolved);
+        const mime = MIME[ext] || 'application/octet-stream';
+        const data = fs.readFileSync(resolved);
+        return new NextResponse(data, {
+          headers: {
+            'Content-Type': mime,
+            'Content-Length': String(stat.size),
+            // Neutralize script in SVGs (and any other markup) when the raw
+            // URL is opened as a top-level document. Inert for <img> use.
+            'Content-Security-Policy': 'sandbox',
+            'X-Content-Type-Options': 'nosniff',
+            'Cache-Control': 'private, max-age=60',
+          },
+        });
+      } catch {
+        return new NextResponse('Not found', { status: 404 });
+      }
+    }
+
+    // Read file contents
+    if (file) {
+      try {
+        const resolved = resolveAllowedPath(file, user);
+        if (!resolved) return NextResponse.json({ error: 'Cannot read file' }, { status: 404 });
+        const stat = fs.statSync(resolved);
+        const ext = path.extname(resolved).toLowerCase();
+
+        // Images — return metadata with base64 data URL for small ones, raw URL for large
+        if (IMAGE_EXTS.has(ext)) {
+          if (stat.size > MAX_IMAGE_SIZE) {
+            return NextResponse.json({ image: true, tooLarge: true, ext, size: stat.size, name: path.basename(resolved) });
+          }
+          return NextResponse.json({
+            name: path.basename(resolved),
+            path: resolved,
+            image: true,
+            ext,
+            size: stat.size,
+            // Client will use the raw endpoint to load the image
+            rawUrl: `/api/files?raw=${encodeURIComponent(resolved)}`,
+          });
+        }
+
+        // PDF
+        if (ext === '.pdf') {
+          return NextResponse.json({
+            name: path.basename(resolved),
+            path: resolved,
+            pdf: true,
+            ext,
+            size: stat.size,
+            rawUrl: `/api/files?raw=${encodeURIComponent(resolved)}`,
+          });
+        }
+
+        // Binary files we can't display
+        if (BINARY_EXTS.has(ext)) {
+          return NextResponse.json({ binary: true, ext, size: stat.size, name: path.basename(resolved) });
+        }
+
+        // Text files
+        if (stat.size > MAX_TEXT_SIZE) {
+          return NextResponse.json({ error: 'File too large', size: stat.size, name: path.basename(resolved) });
+        }
+
+        const content = fs.readFileSync(resolved, 'utf-8');
+        const lines = content.split('\n');
+        return NextResponse.json({
+          name: path.basename(resolved),
+          path: resolved,
+          content: lines.length > limit ? lines.slice(0, limit).join('\n') : content,
+          lines: lines.length,
+          truncated: lines.length > limit,
+          size: stat.size,
+          ext,
+        });
+      } catch {
+        return NextResponse.json({ error: 'Cannot read file' }, { status: 404 });
+      }
+    }
+
+    // List directory
+    if (!dir) {
+      return NextResponse.json({ error: 'path parameter required' }, { status: 400 });
+    }
+
+    try {
+      const resolved = resolveAllowedPath(dir, user);
+      if (!resolved) return NextResponse.json({ error: 'Cannot read directory' }, { status: 404 });
+      const entries = fs.readdirSync(resolved, { withFileTypes: true });
+
+      const items = entries
+        .filter(e => !IGNORE.has(e.name) && !e.name.startsWith('.'))
+        .map(e => ({
+          name: e.name,
+          path: path.join(resolved, e.name),
+          isDir: e.isDirectory(),
+          ext: e.isDirectory() ? null : path.extname(e.name).toLowerCase(),
+        }))
+        .sort((a, b) => {
+          if (a.isDir !== b.isDir) return a.isDir ? -1 : 1;
+          return a.name.localeCompare(b.name);
+        });
+
+      return NextResponse.json({
+        current: resolved,
+        parent: path.dirname(resolved),
+        items,
+      });
+    } catch {
+      return NextResponse.json({ error: 'Cannot read directory' }, { status: 404 });
+    }
+  });
+}
+
+export async function POST(request: NextRequest) {
+  const user = getAuthUser(request);
+  return withUser(user, async () => {
+    try {
+      const formData = await request.formData();
+      const dir = formData.get('dir') as string;
+      if (!dir) return NextResponse.json({ error: 'dir required' }, { status: 400 });
+
+      const resolved = resolveAllowedPath(dir, user);
+      if (!resolved || !fs.existsSync(resolved) || !fs.statSync(resolved).isDirectory()) {
+        return NextResponse.json({ error: 'Directory not found' }, { status: 404 });
+      }
+
+      const files = formData.getAll('files') as File[];
+      if (files.length === 0) return NextResponse.json({ error: 'No files provided' }, { status: 400 });
+
+      const saved: string[] = [];
+      for (const file of files) {
+        // Sanitize filename — strip path separators to prevent traversal
+        const safeName = file.name.replace(/[/\\]/g, '_');
+        if (!safeName || safeName === '.' || safeName === '..') continue;
+
+        const destPath = path.join(resolved, safeName);
+        const buffer = Buffer.from(await file.arrayBuffer());
+        fs.writeFileSync(destPath, buffer);
+        saved.push(safeName);
+      }
+
+      return NextResponse.json({ uploaded: saved.length, files: saved });
+    } catch (err) {
+      return NextResponse.json({ error: 'Upload failed' }, { status: 500 });
+    }
+  });
+}

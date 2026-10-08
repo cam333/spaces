@@ -1,0 +1,17 @@
+[workspace]
+resolver = "2"
+members = ["crates/spaces-proto", "crates/spaces-tui"]
+
+[workspace.package]
+edition = "2021"
+rust-version = "1.97"
+license = "Apache-2.0"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "sync", "time", "io-util"] }
+tokio-tungstenite = "0.24"
+futures-util = "0.3"
+anyhow = "1"
+thiserror = "2"

@@ -1,0 +1,148 @@
+name: Publish to npm
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+jobs:
+  # The main package lists the five @jlongo78/agent-spaces-tui-* packages as
+  # optional dependencies, and npm skips an optional dependency it cannot
+  # fetch without a word. Publishing only the main package therefore shipped
+  # a `spaces` whose terminal client could never be found, falling back to
+  # the browser on every machine. The binaries go out first, then the
+  # package that depends on them.
+  #
+  # Runners: see the tui-binaries job in ci.yml for why Linux builds on
+  # 22.04 and x86_64 macOS on macos-15-intel. `pkg` is the directory under
+  # npm/ and the artifact name; the npm name comes from its package.json.
+  tui-binaries:
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - { target: x86_64-unknown-linux-gnu,  runner: ubuntu-22.04,     pkg: agent-spaces-tui-linux-x64 }
+          - { target: aarch64-unknown-linux-gnu, runner: ubuntu-22.04-arm, pkg: agent-spaces-tui-linux-arm64 }
+          - { target: x86_64-apple-darwin,       runner: macos-15-intel,   pkg: agent-spaces-tui-darwin-x64 }
+          - { target: aarch64-apple-darwin,      runner: macos-latest,     pkg: agent-spaces-tui-darwin-arm64 }
+          - { target: x86_64-pc-windows-msvc,    runner: windows-latest,   pkg: agent-spaces-tui-win32-x64 }
+    steps:
+      - uses: actions/checkout@v4
+      # Keep in sync with rust-toolchain.toml; see the same step in ci.yml.
+      - uses: dtolnay/rust-toolchain@1.97.1
+        with:
+          targets: ${{ matrix.target }}
+      - name: build
+        run: cargo build --release --target ${{ matrix.target }} -p spaces-tui
+        working-directory: tui
+      # Tarred so the executable bit survives upload-artifact; cygpath so
+      # Git Bash's tar on Windows does not read `D:` as a remote host. See
+      # the same step in ci.yml.
+      - name: package binary
+        shell: bash
+        run: |
+          out="$RUNNER_TEMP/${{ matrix.pkg }}.tar.gz"
+          if command -v cygpath >/dev/null 2>&1; then out="$(cygpath -u "$out")"; fi
+          cd tui/target/${{ matrix.target }}/release
+          if [ -f spaces-tui.exe ]; then
+            tar -czf "$out" spaces-tui.exe
+          else
+            chmod +x spaces-tui
+            tar -czf "$out" spaces-tui
+          fi
+          tar -tzvf "$out"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.pkg }}
+          path: ${{ runner.temp }}/${{ matrix.pkg }}.tar.gz
+          if-no-files-found: error
+
+  publish:
+    needs: tui-binaries
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # npm provenance, and trusted publishing once it is configured.
+      id-token: write
+    env:
+      # Authentication. Trusted publishing (OIDC, via id-token above) can only
+      # be configured on npmjs.com for a package that already exists, so the
+      # very first publish of each package needs a token: add an npm
+      # automation token as the NPM_TOKEN repository secret for that release,
+      # then configure trusted publishing for all six packages and delete the
+      # secret. With the secret absent this is empty and npm uses OIDC.
+      NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+
+      # Trusted publishing needs npm 11.5.1 or later.
+      - name: npm version for trusted publishing
+        run: npm install -g npm@^11.5.1 && npm --version
+
+      # A tag that disagrees with package.json, or a platform package left
+      # on an old version, would publish a main package whose optional
+      # dependencies point at binaries that do not exist.
+      - name: check versions agree
+        shell: bash
+        run: |
+          version=$(node -p "require('./package.json').version")
+          [ "${GITHUB_REF_NAME}" = "v${version}" ] || { echo "tag ${GITHUB_REF_NAME} != v${version}"; exit 1; }
+          for dir in npm/*/; do
+            name=$(node -p "require('./${dir}package.json').name")
+            v=$(node -p "require('./${dir}package.json').version")
+            pinned=$(node -p "require('./package.json').optionalDependencies['${name}'] || ''")
+            [ "$v" = "$version" ] || { echo "${name} is ${v}, expected ${version}"; exit 1; }
+            [ "$pinned" = "$version" ] || { echo "package.json pins ${name}@${pinned}, expected ${version}"; exit 1; }
+          done
+
+      - name: Install dependencies
+        run: npm ci
+
+      # The whole suite, before anything is published.
+      - name: tests
+        run: npx vitest run
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: ${{ runner.temp }}/binaries
+
+      - name: publish the platform packages
+        shell: bash
+        run: |
+          for dir in npm/*/; do
+            pkg=$(basename "$dir")
+            name=$(node -p "require('./${dir}package.json').name")
+            mkdir -p "${dir}bin"
+            tar -xzf "$RUNNER_TEMP/binaries/${pkg}/${pkg}.tar.gz" -C "${dir}bin"
+            if [ "$pkg" != "agent-spaces-tui-win32-x64" ]; then
+              test -x "${dir}bin/spaces-tui" || { echo "${name}: binary lost its executable bit"; exit 1; }
+            fi
+            version=$(node -p "require('./${dir}package.json').version")
+            # Re-running a failed release must not die on what already went out.
+            if npm view "${name}@${version}" version >/dev/null 2>&1; then
+              echo "${name}@${version} already published"
+              continue
+            fi
+            npm publish "$dir" --access public --provenance
+          done
+
+      # prepublishOnly builds the app; prepack scrubs the standalone output.
+      - name: Publish to npm with provenance
+        shell: bash
+        run: |
+          name=$(node -p "require('./package.json').name")
+          version=$(node -p "require('./package.json').version")
+          if npm view "${name}@${version}" version >/dev/null 2>&1; then
+            echo "${name}@${version} already published"
+            exit 0
+          fi
+          npm publish --access public --provenance

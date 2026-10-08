@@ -1,0 +1,11 @@
+{
+  "agent": "codex",
+  "expectedState": "idle",
+  "snapshot": {
+    "rows": ["■ Task complete.", "", "> "],
+    "title": "codex",
+    "progress": null,
+    "cols": 80,
+    "rows_count": 3
+  }
+}

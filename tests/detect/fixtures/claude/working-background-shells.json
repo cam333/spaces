@@ -1,0 +1,14 @@
+{
+  "agent": "claude",
+  "expectedState": "working",
+  "snapshot": {
+    "rows": [
+      "Ran npm test in the background.",
+      "⏵⏵ bypassing permissions · 3 shells ·"
+    ],
+    "title": "Claude",
+    "progress": null,
+    "cols": 80,
+    "rows_count": 2
+  }
+}

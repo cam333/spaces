@@ -1,0 +1,1109 @@
+#!/usr/bin/env node
+
+'use strict';
+
+const { execFileSync, spawnSync } = require('child_process');
+const path = require('path');
+const os = require('os');
+const fs = require('fs');
+const readline = require('readline');
+
+let SPACES_DIR = path.join(os.homedir(), '.spaces');
+let CONFIG_PATH = path.join(SPACES_DIR, 'server.json');
+let LOGS_DIR = path.join(SPACES_DIR, 'logs');
+const SERVICE_NAME = 'spaces';
+const LABEL = 'com.agentspaces.spaces';
+const TASK_NAME = 'Spaces';
+
+// Override SPACES_DIR to point to a different user's home
+function setTargetHome(homedir) {
+  SPACES_DIR = path.join(homedir, '.spaces');
+  CONFIG_PATH = path.join(SPACES_DIR, 'server.json');
+  LOGS_DIR = path.join(SPACES_DIR, 'logs');
+}
+
+// ─── Helpers ──────────────────────────────────────────────────
+function log(msg) { console.log(`  ${msg}`); }
+function logOk(msg) { console.log(`  ✓ ${msg}`); }
+function logErr(msg) { console.error(`  ✗ ${msg}`); }
+
+function resolveConfig() {
+  let config = {};
+  if (fs.existsSync(CONFIG_PATH)) {
+    try { config = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf-8')); } catch {}
+  }
+  return {
+    port: config.port || 3457,
+    tier: config.tier || 'community',
+    basePath: config.basePath || '',
+    allowedOrigins: config.allowedOrigins || '',
+  };
+}
+
+function resolveSpacesPath() {
+  // Prefer the globally-installed package so upgrades via `npm i -g` take
+  // effect without needing to re-run `spaces service install`.
+  try {
+    const globalRoot = execFileSync('npm', ['root', '-g'], { encoding: 'utf-8', timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+    const globalSpaces = path.join(globalRoot, '@jlongo78', 'agent-spaces', 'bin', 'spaces.js');
+    if (fs.existsSync(globalSpaces)) return globalSpaces;
+  } catch { /* fall through */ }
+  return path.join(__dirname, 'spaces.js');
+}
+
+function resolveProjectDir() {
+  return path.join(__dirname, '..');
+}
+
+function resolveNodePath() {
+  return process.execPath;
+}
+
+function promptLevel() {
+  return new Promise((resolve) => {
+    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+    console.log('');
+    log('Install as:');
+    log('  1. System service (starts on boot, all users)');
+    log('  2. User service (starts on login, current user only)');
+    console.log('');
+    rl.question('  Choice [2]: ', (answer) => {
+      rl.close();
+      const choice = answer.trim() || '2';
+      resolve(choice === '1' ? 'system' : 'user');
+    });
+  });
+}
+
+function ensureLogsDir() {
+  fs.mkdirSync(LOGS_DIR, { recursive: true });
+}
+
+// Detect Windows user profiles that have .claude/ (Claude Code data)
+function findClaudeUsers() {
+  if (process.platform !== 'win32') return [];
+  const usersDir = path.dirname(os.homedir());
+  const skip = new Set(['Public', 'Default', 'Default User', 'All Users']);
+  try {
+    return fs.readdirSync(usersDir)
+      .filter(name => !skip.has(name) && !name.startsWith('.'))
+      .filter(name => {
+        const claudeDir = path.join(usersDir, name, '.claude');
+        return fs.existsSync(claudeDir);
+      })
+      .map(name => ({ name, homedir: path.join(usersDir, name) }));
+  } catch { return []; }
+}
+
+// Prompt for which user's home directory to target (system service only).
+// Looks for users with .claude/ (Claude Code data) since that's what gets synced.
+function promptTargetUser() {
+  return new Promise((resolve) => {
+    const currentHome = os.homedir();
+    const users = findClaudeUsers();
+
+    // No Claude users found — fall back to current user
+    if (users.length === 0) {
+      resolve(currentHome);
+      return;
+    }
+    // Single Claude user — auto-select
+    if (users.length === 1) {
+      log(`Using home directory: ${users[0].homedir}`);
+      resolve(users[0].homedir);
+      return;
+    }
+
+    // Multiple Claude users — ask which one
+    console.log('');
+    log('Multiple users have Claude Code data:');
+    users.forEach((u, i) => log(`  ${i + 1}. ${u.name} (${u.homedir})`));
+    console.log('');
+    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+    rl.question(`  Run as user [1]: `, (answer) => {
+      rl.close();
+      const idx = parseInt(answer.trim() || '1', 10) - 1;
+      const chosen = users[idx] || users[0];
+      resolve(chosen.homedir);
+    });
+  });
+}
+
+
+// --- SSH AuthorizedKeysCommand setup (Linux/macOS) ---
+// Configures sshd to dynamically authorize Spaces users via a lookup script,
+// eliminating the need to manually manage ~/.ssh/authorized_keys per user.
+function configureAuthorizedKeysCommand() {
+  if (process.platform === 'win32') return; // Windows uses a different approach
+
+  const scriptSrc = path.join(__dirname, 'ssh-auth-keys.sh');
+  const scriptDst = '/opt/spaces/bin/ssh-auth-keys.sh';
+  const sshdConfig = '/etc/ssh/sshd_config';
+  const spacesConfDrop = '/etc/ssh/sshd_config.d/spaces.conf';
+
+  // Install the script to a stable system path
+  try {
+    spawnSync('sudo', ['mkdir', '-p', '/opt/spaces/bin'], { stdio: 'pipe', timeout: 5000 });
+    spawnSync('sudo', ['cp', scriptSrc, scriptDst], { stdio: 'pipe', timeout: 5000 });
+    spawnSync('sudo', ['chmod', '755', scriptDst], { stdio: 'pipe', timeout: 5000 });
+    spawnSync('sudo', ['chown', 'root:root', scriptDst], { stdio: 'pipe', timeout: 5000 });
+    logOk('Installed ssh-auth-keys.sh to ' + scriptDst);
+  } catch (e) {
+    logErr('Failed to install ssh-auth-keys.sh: ' + e.message);
+    return;
+  }
+
+  // SECURITY (review H3): pin the .spaces location that the AuthorizedKeysCommand
+  // trusts to a single root-owned file, instead of letting the script glob
+  // /home/*/.spaces (which let any local user plant a service_key.pub + admin.db
+  // and have sshd authorize their key). The script reads this absolute path.
+  try {
+    const pinResult = spawnSync('sudo', ['tee', '/opt/spaces/spaces-dir'], {
+      input: SPACES_DIR + '\n', stdio: ['pipe', 'pipe', 'inherit'], timeout: 5000,
+    });
+    if (pinResult.status === 0) {
+      spawnSync('sudo', ['chmod', '644', '/opt/spaces/spaces-dir'], { stdio: 'pipe', timeout: 5000 });
+      spawnSync('sudo', ['chown', 'root:root', '/opt/spaces/spaces-dir'], { stdio: 'pipe', timeout: 5000 });
+      logOk('Pinned Spaces directory for AuthorizedKeysCommand: ' + SPACES_DIR);
+    }
+  } catch (e) {
+    logErr('Failed to pin Spaces directory: ' + e.message);
+  }
+
+  // Prefer sshd_config.d drop-in if the Include directive exists
+  const sshdContent = fs.existsSync(sshdConfig)
+    ? fs.readFileSync(sshdConfig, 'utf-8') : '';
+
+  const configLines = [
+    '# Spaces: dynamically authorize shell users via admin DB lookup',
+    'AuthorizedKeysCommand ' + scriptDst + ' %u',
+    'AuthorizedKeysCommandUser nobody',
+  ].join('\n') + '\n';
+
+  // Already configured?
+  if (sshdContent.includes('ssh-auth-keys.sh')) {
+    logOk('AuthorizedKeysCommand already configured in sshd_config');
+    return;
+  }
+
+  // Try drop-in directory first (cleaner, doesn't touch main config)
+  const hasIncludeDir = sshdContent.includes('Include /etc/ssh/sshd_config.d/');
+  if (hasIncludeDir) {
+    try {
+      spawnSync('sudo', ['mkdir', '-p', '/etc/ssh/sshd_config.d'], { stdio: 'pipe', timeout: 5000 });
+      const result = spawnSync('sudo', ['tee', spacesConfDrop], {
+        input: configLines, stdio: ['pipe', 'pipe', 'inherit'], timeout: 5000,
+      });
+      if (result.status === 0) {
+        logOk('Created ' + spacesConfDrop);
+      }
+    } catch (e) {
+      logErr('Failed to write drop-in config: ' + e.message);
+    }
+  } else {
+    // Append directly to sshd_config
+    try {
+      const appendContent = '\n# Spaces SSH authorization\n' + configLines;
+      const result = spawnSync('sudo', ['tee', '-a', sshdConfig], {
+        input: appendContent, stdio: ['pipe', 'pipe', 'inherit'], timeout: 5000,
+      });
+      if (result.status === 0) {
+        logOk('Added AuthorizedKeysCommand to ' + sshdConfig);
+      }
+    } catch (e) {
+      logErr('Failed to update sshd_config: ' + e.message);
+    }
+  }
+
+  // Restart sshd to pick up the change
+  try {
+    spawnSync('sudo', ['systemctl', 'restart', 'sshd'], { stdio: 'pipe', timeout: 10000 });
+    logOk('Restarted sshd');
+  } catch {
+    try {
+      spawnSync('sudo', ['systemctl', 'restart', 'ssh'], { stdio: 'pipe', timeout: 10000 });
+      logOk('Restarted ssh');
+    } catch {
+      log('Warning: could not restart sshd — restart it manually');
+    }
+  }
+}
+
+// --- SSH key provisioning (for multi-user system service) ---
+function checkOpenSSHServer() {
+  if (process.platform !== 'win32') return true;
+  try {
+    const result = spawnSync('powershell', ['-NoProfile', '-Command',
+      'Get-Service sshd -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Status'
+    ], { encoding: 'utf-8', timeout: 10000 });
+    const status = (result.stdout || '').trim();
+    return status === 'Running' || status === 'Stopped';
+  } catch { return false; }
+}
+
+function ensureOpenSSHServer() {
+  if (process.platform !== 'win32') return;
+  if (checkOpenSSHServer()) {
+    try {
+      spawnSync('powershell', ['-NoProfile', '-Command',
+        'Start-Service sshd; Set-Service -Name sshd -StartupType Automatic'
+      ], { stdio: 'pipe', timeout: 15000 });
+      logOk('OpenSSH Server started and set to automatic');
+    } catch {
+      log('Warning: could not start OpenSSH Server');
+    }
+    return;
+  }
+  log('Installing OpenSSH Server (required for multi-user terminals)...');
+  try {
+    const result = spawnSync('powershell', ['-NoProfile', '-Command',
+      'Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0'
+    ], { encoding: 'utf-8', stdio: 'pipe', timeout: 120000 });
+    if (result.status === 0) {
+      logOk('OpenSSH Server installed');
+      spawnSync('powershell', ['-NoProfile', '-Command',
+        'Start-Service sshd; Set-Service -Name sshd -StartupType Automatic'
+      ], { stdio: 'pipe', timeout: 15000 });
+      logOk('OpenSSH Server started');
+    } else {
+      logErr('Failed to install OpenSSH Server: ' + (result.stderr || '').trim());
+      log('Multi-user terminals will not work. Install manually:');
+      log('  Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0');
+    }
+  } catch (e) {
+    logErr('Failed to install OpenSSH Server: ' + e.message);
+  }
+}
+
+function ensureServiceKey() {
+  const keyPath = path.join(SPACES_DIR, 'service_key');
+  if (fs.existsSync(keyPath)) return keyPath;
+  log('Generating SSH service key...');
+  fs.mkdirSync(SPACES_DIR, { recursive: true });
+  const result = spawnSync('ssh-keygen', [
+    '-t', 'ed25519',
+    '-f', keyPath,
+    '-N', '',
+    '-C', 'spaces-service-key',
+  ], { stdio: 'pipe', timeout: 10000 });
+  if (result.status !== 0) {
+    logErr('Failed to generate SSH key');
+    return null;
+  }
+
+  // On Windows, restrict private key permissions so OpenSSH accepts it.
+  // OpenSSH requires: no inherited ACLs, only the file owner + SYSTEM may have access.
+  if (process.platform === 'win32') {
+    try {
+      const currentUser = os.userInfo().username;
+      // Remove inheritance and all default ACLs, then grant only owner + SYSTEM
+      spawnSync('icacls', [keyPath, '/inheritance:r',
+        '/remove', 'BUILTIN\\Administrators',
+        '/remove', 'BUILTIN\\Users',
+        '/remove', 'Everyone',
+        '/grant:r', currentUser + ':(F)',
+        '/grant', 'NT AUTHORITY\\SYSTEM:(F)'], { stdio: 'pipe', timeout: 5000 });
+    } catch {}
+  }
+
+  logOk('SSH service key generated');
+  return keyPath;
+}
+
+function authorizeServiceKey(keyPath, targetUser) {
+  const pubKey = fs.readFileSync(keyPath + '.pub', 'utf-8').trim();
+
+  if (process.platform === 'win32') {
+    // Windows OpenSSH ignores ~/.ssh/authorized_keys for admin users.
+    // Must use C:\ProgramData\ssh\administrators_authorized_keys instead.
+    const adminAuthKeys = path.join(process.env.ProgramData || 'C:\\ProgramData', 'ssh', 'administrators_authorized_keys');
+    const userAuthKeys = path.join(path.dirname(os.homedir()), targetUser, '.ssh', 'authorized_keys');
+
+    // Check if user is an administrator (exact match, not substring)
+    let isAdmin = false;
+    try {
+      const result = spawnSync('net', ['localgroup', 'Administrators'], { encoding: 'utf-8', timeout: 5000 });
+      const lines = (result.stdout || '').split(/\r?\n/);
+      const sep = lines.findIndex(l => l.trim().startsWith('---'));
+      if (sep >= 0) {
+        const members = lines.slice(sep + 1).map(l => l.trim()).filter(Boolean);
+        isAdmin = members.some(m => m.toLowerCase() === targetUser.toLowerCase());
+      }
+    } catch {}
+
+    const authKeysPath = isAdmin ? adminAuthKeys : userAuthKeys;
+    const authDir = path.dirname(authKeysPath);
+    if (!fs.existsSync(authDir)) fs.mkdirSync(authDir, { recursive: true });
+
+    // Check if key already authorized
+    if (fs.existsSync(authKeysPath)) {
+      const existing = fs.readFileSync(authKeysPath, 'utf-8');
+      if (existing.includes(pubKey)) return;
+    }
+    fs.appendFileSync(authKeysPath, pubKey + String.fromCharCode(10));
+
+    // Fix permissions for administrators_authorized_keys
+    if (isAdmin) {
+      try {
+        spawnSync('icacls', [authKeysPath, '/inheritance:r', '/grant', 'SYSTEM:(R)', '/grant', 'Administrators:(R)'], { stdio: 'pipe', timeout: 5000 });
+      } catch {}
+    }
+  } else {
+    // Linux/macOS: use ~/.ssh/authorized_keys
+    let userHome;
+    try {
+      // Use getent to resolve the actual home directory (works with LDAP, NIS, etc.)
+      const result = spawnSync('getent', ['passwd', targetUser], { encoding: 'utf-8', timeout: 5000 });
+      const fields = (result.stdout || '').split(':');
+      userHome = fields[5] || (process.platform === 'darwin' ? `/Users/${targetUser}` : `/home/${targetUser}`);
+    } catch {
+      userHome = process.platform === 'darwin' ? `/Users/${targetUser}` : `/home/${targetUser}`;
+    }
+    const sshDir = path.join(userHome, '.ssh');
+    const authKeysPath = path.join(sshDir, 'authorized_keys');
+    if (!fs.existsSync(sshDir)) fs.mkdirSync(sshDir, { recursive: true, mode: 0o700 });
+    if (fs.existsSync(authKeysPath)) {
+      const existing = fs.readFileSync(authKeysPath, 'utf-8');
+      if (existing.includes(pubKey)) return;
+    }
+    fs.appendFileSync(authKeysPath, pubKey + String.fromCharCode(10));
+  }
+  logOk('SSH key authorized for ' + targetUser);
+}
+
+const LEVEL_PATH = path.join(SPACES_DIR, 'service-level');
+
+function saveLevel(level) {
+  fs.mkdirSync(SPACES_DIR, { recursive: true });
+  fs.writeFileSync(LEVEL_PATH, level);
+}
+
+function loadLevel() {
+  try { return fs.readFileSync(LEVEL_PATH, 'utf-8').trim(); } catch { return null; }
+}
+
+// ─── Platform detection ───────────────────────────────────────
+function getPlatform() {
+  switch (process.platform) {
+    case 'linux': return 'linux';
+    case 'darwin': return 'darwin';
+    case 'win32': return 'win32';
+    default:
+      logErr(`Unsupported platform: ${process.platform}`);
+      process.exit(1);
+  }
+}
+
+// ─── Linux (systemd) ─────────────────────────────────────────
+function linuxServicePath(level) {
+  if (level === 'system') {
+    return `/etc/systemd/system/${SERVICE_NAME}.service`;
+  }
+  const userDir = path.join(os.homedir(), '.config', 'systemd', 'user');
+  fs.mkdirSync(userDir, { recursive: true });
+  return path.join(userDir, `${SERVICE_NAME}.service`);
+}
+
+function linuxUnitFile(level) {
+  const config = resolveConfig();
+  const nodePath = resolveNodePath();
+  const spacesPath = resolveSpacesPath();
+  const projectDir = resolveProjectDir();
+
+  let envLines = [
+    `Environment=SPACES_SERVICE=1`,
+    `Environment=SPACES_PORT=${config.port}`,
+  ];
+  // Persist multiuser mode if enabled in config
+  if (config.multiuser === true) {
+    envLines.push(`Environment=SPACES_MULTIUSER=1`);
+  }
+  if (config.basePath) {
+    envLines.push(`Environment=SPACES_BASE_PATH=${config.basePath}`);
+  }
+  if (config.allowedOrigins) {
+    envLines.push(`Environment=SPACES_ALLOWED_ORIGINS=${config.allowedOrigins}`);
+  }
+
+  // Allow users to set API keys (OPENAI_API_KEY, etc.) in ~/.spaces/env
+  const envFilePath = path.join(SPACES_DIR, 'env');
+
+  let serviceSection = [
+    'Type=simple',
+    `ExecStart=${nodePath} ${spacesPath}`,
+    `WorkingDirectory=${projectDir}`,
+    `EnvironmentFile=-${envFilePath}`,
+    ...envLines,
+    'Restart=on-failure',
+    'RestartSec=5',
+  ];
+
+  if (level === 'system') {
+    const username = os.userInfo().username;
+    serviceSection.push(`User=${username}`);
+    serviceSection.push(`Group=${username}`);
+  }
+
+  const wantedBy = level === 'system' ? 'multi-user.target' : 'default.target';
+
+  return [
+    '[Unit]',
+    'Description=Spaces - Agent Workspace Manager',
+    'After=network.target',
+    '',
+    '[Service]',
+    ...serviceSection,
+    '',
+    '[Install]',
+    `WantedBy=${wantedBy}`,
+    '',
+  ].join('\n');
+}
+
+function linuxSystemctl(level, ...args) {
+  if (level === 'system') {
+    execFileSync('sudo', ['systemctl', ...args], { stdio: 'inherit' });
+  } else {
+    // User-level systemctl needs XDG_RUNTIME_DIR to connect to the user bus.
+    // Always set it from the real UID — inherited env may have a stale value
+    // (e.g. from a prior session with a different UID mapping).
+    const uid = process.getuid();
+    const env = {
+      ...process.env,
+      XDG_RUNTIME_DIR: `/run/user/${uid}`,
+      DBUS_SESSION_BUS_ADDRESS: `unix:path=/run/user/${uid}/bus`,
+    };
+    execFileSync('systemctl', ['--user', ...args], { stdio: 'inherit', env });
+  }
+}
+
+async function linuxInstall() {
+  const level = await promptLevel();
+  const unitContent = linuxUnitFile(level);
+  const servicePath = linuxServicePath(level);
+
+  log(`Writing unit file to ${servicePath}`);
+  if (level === 'system') {
+    const result = spawnSync('sudo', ['tee', servicePath], {
+      input: unitContent,
+      stdio: ['pipe', 'pipe', 'inherit'],
+    });
+    if (result.status !== 0) {
+      logErr('Failed to write unit file');
+      process.exit(1);
+    }
+  } else {
+    fs.writeFileSync(servicePath, unitContent);
+  }
+  logOk('Unit file written');
+
+  saveLevel(level);
+
+  linuxSystemctl(level, 'daemon-reload');
+  logOk('Reloaded systemd daemon');
+
+  linuxSystemctl(level, 'enable', `${SERVICE_NAME}.service`);
+  logOk('Service enabled');
+
+  linuxSystemctl(level, 'start', `${SERVICE_NAME}.service`);
+  logOk('Service started');
+
+  if (level === 'user') {
+    try {
+      const uid = process.getuid();
+      const env = {
+        ...process.env,
+        XDG_RUNTIME_DIR: `/run/user/${uid}`,
+        DBUS_SESSION_BUS_ADDRESS: `unix:path=/run/user/${uid}/bus`,
+      };
+      execFileSync('loginctl', ['enable-linger', os.userInfo().username], { stdio: 'inherit', env });
+      logOk('Enabled login lingering for user service');
+    } catch {
+      log('Warning: could not enable-linger (user service may not start on boot)');
+    }
+  }
+
+  // Set up SSH AuthorizedKeysCommand for seamless multi-user terminal access
+  if (level === 'system') {
+    configureAuthorizedKeysCommand();
+    const keyPath = ensureServiceKey();
+    if (keyPath) {
+      authorizeServiceKey(keyPath, os.userInfo().username);
+    }
+  }
+
+  logOk(`Spaces installed as ${level} service`);
+}
+
+async function linuxUninstall() {
+  const level = loadLevel() || 'user';
+  const servicePath = linuxServicePath(level);
+
+  try {
+    linuxSystemctl(level, 'stop', `${SERVICE_NAME}.service`);
+    logOk('Service stopped');
+  } catch {
+    log('Service was not running');
+  }
+
+  try {
+    linuxSystemctl(level, 'disable', `${SERVICE_NAME}.service`);
+    logOk('Service disabled');
+  } catch {
+    log('Service was not enabled');
+  }
+
+  try {
+    if (level === 'system') {
+      execFileSync('sudo', ['rm', '-f', servicePath], { stdio: 'inherit' });
+    } else {
+      fs.unlinkSync(servicePath);
+    }
+    logOk('Unit file removed');
+  } catch {
+    log('Unit file was already removed');
+  }
+
+  try {
+    linuxSystemctl(level, 'daemon-reload');
+    logOk('Reloaded systemd daemon');
+  } catch {
+    log('Warning: daemon-reload failed');
+  }
+
+  try {
+    fs.unlinkSync(LEVEL_PATH);
+  } catch {}
+
+  logOk('Spaces service uninstalled');
+}
+
+async function linuxStart() {
+  const level = loadLevel() || 'user';
+  // Regenerate unit file so it picks up the latest installed version
+  const unitContent = linuxUnitFile(level);
+  const unitPath = linuxServicePath(level);
+  fs.writeFileSync(unitPath, unitContent);
+  linuxSystemctl(level, 'daemon-reload');
+  // Clear stale update-check cache
+  try { fs.unlinkSync(path.join(SPACES_DIR, 'update-check.json')); } catch {}
+  linuxSystemctl(level, 'start', `${SERVICE_NAME}.service`);
+  logOk('Service started');
+}
+
+async function linuxStop() {
+  const level = loadLevel() || 'user';
+  linuxSystemctl(level, 'stop', `${SERVICE_NAME}.service`);
+  logOk('Service stopped');
+}
+
+async function linuxStatus() {
+  const level = loadLevel() || 'user';
+  try {
+    linuxSystemctl(level, 'status', `${SERVICE_NAME}.service`);
+  } catch {
+    // systemctl status returns non-zero for stopped/failed services
+  }
+}
+
+async function linuxLogs() {
+  const level = loadLevel() || 'user';
+  if (level === 'user') {
+    const uid = process.getuid();
+    const env = {
+      ...process.env,
+      XDG_RUNTIME_DIR: `/run/user/${uid}`,
+      DBUS_SESSION_BUS_ADDRESS: `unix:path=/run/user/${uid}/bus`,
+    };
+    spawnSync('journalctl', ['--user', '-u', SERVICE_NAME, '-f', '--no-pager'], { stdio: 'inherit', env });
+  } else {
+    spawnSync('sudo', ['journalctl', '-u', SERVICE_NAME, '-f', '--no-pager'], { stdio: 'inherit' });
+  }
+}
+
+// ─── macOS (launchd) ─────────────────────────────────────────
+function darwinPlistPath(level) {
+  if (level === 'system') {
+    return `/Library/LaunchDaemons/${LABEL}.plist`;
+  }
+  return path.join(os.homedir(), 'Library', 'LaunchAgents', `${LABEL}.plist`);
+}
+
+function darwinPlistContent(level) {
+  ensureLogsDir();
+  const config = resolveConfig();
+  const nodePath = resolveNodePath();
+  const spacesPath = resolveSpacesPath();
+  const projectDir = resolveProjectDir();
+  const outLog = path.join(LOGS_DIR, 'spaces.out.log');
+  const errLog = path.join(LOGS_DIR, 'spaces.err.log');
+
+  let envEntries = [
+    `      <key>SPACES_SERVICE</key>`,
+    `      <string>1</string>`,
+    `      <key>SPACES_PORT</key>`,
+    `      <string>${config.port}</string>`,
+  ];
+  // Persist multiuser mode if enabled
+  if (config.multiuser === true) {
+    envEntries.push(`      <key>SPACES_MULTIUSER</key>`);
+    envEntries.push(`      <string>1</string>`);
+  }
+  if (config.basePath) {
+    envEntries.push(`      <key>SPACES_BASE_PATH</key>`);
+    envEntries.push(`      <string>${config.basePath}</string>`);
+  }
+  if (config.allowedOrigins) {
+    envEntries.push(`      <key>SPACES_ALLOWED_ORIGINS</key>`);
+    envEntries.push(`      <string>${config.allowedOrigins}</string>`);
+  }
+
+  let extraKeys = '';
+  if (level === 'system') {
+    extraKeys = `    <key>UserName</key>\n    <string>${os.userInfo().username}</string>\n`;
+  }
+
+  return [
+    '<?xml version="1.0" encoding="UTF-8"?>',
+    '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">',
+    '<plist version="1.0">',
+    '<dict>',
+    `    <key>Label</key>`,
+    `    <string>${LABEL}</string>`,
+    `    <key>ProgramArguments</key>`,
+    `    <array>`,
+    `      <string>${nodePath}</string>`,
+    `      <string>${spacesPath}</string>`,
+    `    </array>`,
+    `    <key>WorkingDirectory</key>`,
+    `    <string>${projectDir}</string>`,
+    `    <key>EnvironmentVariables</key>`,
+    `    <dict>`,
+    ...envEntries,
+    `    </dict>`,
+    `    <key>RunAtLoad</key>`,
+    `    <true/>`,
+    `    <key>KeepAlive</key>`,
+    `    <true/>`,
+    `    <key>StandardOutPath</key>`,
+    `    <string>${outLog}</string>`,
+    `    <key>StandardErrorPath</key>`,
+    `    <string>${errLog}</string>`,
+    extraKeys ? extraKeys.trimEnd() : null,
+    '</dict>',
+    '</plist>',
+    '',
+  ].filter((line) => line !== null).join('\n');
+}
+
+async function darwinInstall() {
+  const level = await promptLevel();
+  const plistPath = darwinPlistPath(level);
+  const plistContent = darwinPlistContent(level);
+
+  // Unload existing (ignore errors)
+  try {
+    execFileSync('launchctl', ['unload', '-w', plistPath], { stdio: 'pipe' });
+  } catch {}
+
+  log(`Writing plist to ${plistPath}`);
+  if (level === 'system') {
+    const result = spawnSync('sudo', ['tee', plistPath], {
+      input: plistContent,
+      stdio: ['pipe', 'pipe', 'inherit'],
+    });
+    if (result.status !== 0) {
+      logErr('Failed to write plist file');
+      process.exit(1);
+    }
+    execFileSync('sudo', ['chown', 'root:wheel', plistPath], { stdio: 'inherit' });
+    execFileSync('sudo', ['chmod', '644', plistPath], { stdio: 'inherit' });
+  } else {
+    const agentsDir = path.join(os.homedir(), 'Library', 'LaunchAgents');
+    fs.mkdirSync(agentsDir, { recursive: true });
+    fs.writeFileSync(plistPath, plistContent);
+  }
+  logOk('Plist file written');
+
+  saveLevel(level);
+
+  if (level === 'system') {
+    execFileSync('sudo', ['launchctl', 'load', '-w', plistPath], { stdio: 'inherit' });
+  } else {
+    execFileSync('launchctl', ['load', '-w', plistPath], { stdio: 'inherit' });
+  }
+  logOk('Service loaded');
+
+  // Set up SSH AuthorizedKeysCommand for seamless multi-user terminal access
+  if (level === 'system') {
+    configureAuthorizedKeysCommand();
+    const keyPath = ensureServiceKey();
+    if (keyPath) {
+      authorizeServiceKey(keyPath, os.userInfo().username);
+    }
+  }
+
+  logOk(`Spaces installed as ${level} service`);
+}
+
+async function darwinUninstall() {
+  const level = loadLevel() || 'user';
+  const plistPath = darwinPlistPath(level);
+
+  try {
+    if (level === 'system') {
+      execFileSync('sudo', ['launchctl', 'unload', '-w', plistPath], { stdio: 'inherit' });
+    } else {
+      execFileSync('launchctl', ['unload', '-w', plistPath], { stdio: 'inherit' });
+    }
+    logOk('Service unloaded');
+  } catch {
+    log('Service was not loaded');
+  }
+
+  try {
+    if (level === 'system') {
+      execFileSync('sudo', ['rm', '-f', plistPath], { stdio: 'inherit' });
+    } else {
+      fs.unlinkSync(plistPath);
+    }
+    logOk('Plist file removed');
+  } catch {
+    log('Plist file was already removed');
+  }
+
+  try {
+    fs.unlinkSync(LEVEL_PATH);
+  } catch {}
+
+  logOk('Spaces service uninstalled');
+}
+
+async function darwinStart() {
+  const level = loadLevel() || 'user';
+  const plistPath = darwinPlistPath(level);
+  // Regenerate plist so it picks up the latest installed version
+  const plistContent = darwinPlistContent(level);
+  fs.writeFileSync(plistPath, plistContent);
+  // Clear stale update-check cache
+  try { fs.unlinkSync(path.join(SPACES_DIR, 'update-check.json')); } catch {}
+  if (level === 'system') {
+    execFileSync('sudo', ['launchctl', 'load', '-w', plistPath], { stdio: 'inherit' });
+  } else {
+    execFileSync('launchctl', ['load', '-w', plistPath], { stdio: 'inherit' });
+  }
+  logOk('Service started');
+}
+
+async function darwinStop() {
+  const level = loadLevel() || 'user';
+  const plistPath = darwinPlistPath(level);
+  if (level === 'system') {
+    execFileSync('sudo', ['launchctl', 'unload', '-w', plistPath], { stdio: 'inherit' });
+  } else {
+    execFileSync('launchctl', ['unload', '-w', plistPath], { stdio: 'inherit' });
+  }
+  logOk('Service stopped');
+}
+
+async function darwinStatus() {
+  try {
+    const result = execFileSync('launchctl', ['list'], { encoding: 'utf-8' });
+    const lines = result.split('\n').filter((line) => line.includes(LABEL));
+    if (lines.length > 0) {
+      log('Spaces service status:');
+      lines.forEach((line) => log(line));
+    } else {
+      log('Spaces service is not loaded');
+    }
+  } catch {
+    log('Spaces service is not loaded');
+  }
+}
+
+async function darwinLogs() {
+  ensureLogsDir();
+  const outLogPath = path.join(LOGS_DIR, 'spaces.out.log');
+  if (!fs.existsSync(outLogPath)) {
+    logErr(`Log file not found: ${outLogPath}`);
+    log('Service may not have started yet');
+    process.exit(1);
+  }
+  spawnSync('tail', ['-f', outLogPath], { stdio: 'inherit' });
+}
+
+// ─── Windows (Task Scheduler) ────────────────────────────────
+
+// Where the Task Scheduler wrapper lives.
+//
+// SECURITY (review H1): a SYSTEM-level task runs the wrapper as
+// NT AUTHORITY\SYSTEM. If that wrapper sat in a standard user's profile
+// (C:\Users\<target>\.spaces), that user could overwrite it and have their
+// payload executed as SYSTEM — local privilege escalation. So the system-level
+// wrapper lives in an admin-only location (%ProgramData%\Spaces). The
+// user-level task runs as the user themselves, so keeping it in their profile
+// crosses no privilege boundary.
+function win32WrapperPath(level) {
+  if (level === 'system') {
+    const programData = process.env.ProgramData || 'C:\\ProgramData';
+    return path.join(programData, 'Spaces', 'spaces-service.cmd');
+  }
+  return path.join(SPACES_DIR, 'spaces-service.cmd');
+}
+
+// Lock a directory (and inherited children) so only SYSTEM + Administrators can
+// write; standard users get read+execute. Removes inherited ACEs that would
+// otherwise grant a profile owner write access.
+function hardenWindowsSystemDir(dir) {
+  try {
+    spawnSync('icacls', [dir, '/inheritance:r',
+      '/grant:r', 'SYSTEM:(OI)(CI)F',
+      '/grant:r', 'Administrators:(OI)(CI)F',
+      '/grant:r', 'Users:(OI)(CI)RX',
+    ], { stdio: 'pipe', timeout: 5000 });
+  } catch { /* best-effort; non-fatal */ }
+}
+
+function win32WrapperScript(level) {
+  ensureLogsDir();
+  const config = resolveConfig();
+  const nodePath = resolveNodePath();
+  const spacesPath = resolveSpacesPath();
+  const outLog = path.join(LOGS_DIR, 'spaces.out.log');
+  const wrapperPath = win32WrapperPath(level);
+  // For the SYSTEM wrapper, ensure the admin-only directory exists and is
+  // ACL-hardened BEFORE writing, so the .cmd inherits the locked-down ACL.
+  if (level === 'system') {
+    const wrapperDir = path.dirname(wrapperPath);
+    try { fs.mkdirSync(wrapperDir, { recursive: true }); } catch {}
+    hardenWindowsSystemDir(wrapperDir);
+  }
+
+  const lines = [
+    '@echo off',
+  ];
+  // When running as SYSTEM, override USERPROFILE so os.homedir() resolves
+  // to the target user's home directory (where .spaces/ config lives).
+  if (level === 'system') {
+    const homedir = path.dirname(SPACES_DIR); // use resolved target, not os.homedir()
+    const drive = path.parse(homedir).root.slice(0, -1);
+    const rest = homedir.slice(drive.length);
+    lines.push(`set USERPROFILE=${homedir}`);
+    lines.push(`set HOMEDRIVE=${drive}`);
+    lines.push(`set HOMEPATH=${rest}`);
+  }
+  lines.push('set SPACES_SERVICE=1');
+  lines.push(`set SPACES_PORT=${config.port}`);
+  // Persist multiuser mode if enabled
+  if (config.multiuser === true) {
+    lines.push(`set SPACES_MULTIUSER=1`);
+  }
+  if (config.basePath) {
+    lines.push(`set SPACES_BASE_PATH=${config.basePath}`);
+  }
+  if (config.allowedOrigins) {
+    lines.push(`set SPACES_ALLOWED_ORIGINS=${config.allowedOrigins}`);
+  }
+  lines.push(`"${nodePath}" "${spacesPath}" >> "${outLog}" 2>&1`);
+  lines.push('');
+
+  try {
+    fs.writeFileSync(wrapperPath, lines.join('\r\n'));
+  } catch (e) {
+    // A SYSTEM wrapper in %ProgramData% is intentionally not writable by
+    // non-admin callers (e.g. `spaces service start` from a standard shell).
+    // Keep the existing wrapper rather than failing.
+    if (level === 'system' && !fs.existsSync(wrapperPath)) throw e;
+    log(`Could not regenerate wrapper (insufficient privileges); using existing ${wrapperPath}`);
+  }
+  return wrapperPath;
+}
+
+async function win32Install() {
+  const level = await promptLevel();
+
+  // For system service, determine the target user's home directory
+  // (may differ from the admin account running the installer)
+  if (level === 'system' && process.platform === 'win32') {
+    const targetHome = await promptTargetUser();
+    setTargetHome(targetHome);
+  }
+
+  const wrapperPath = win32WrapperScript(level);
+
+  log(`Wrapper script written to ${wrapperPath}`);
+
+  // Delete existing task (ignore errors)
+  try {
+    execFileSync('schtasks', ['/Delete', '/TN', TASK_NAME, '/F'], { stdio: 'pipe' });
+  } catch {}
+
+  if (level === 'system') {
+    execFileSync('schtasks', ['/Create', '/TN', TASK_NAME, '/TR', `"${wrapperPath}"`, '/SC', 'ONSTART', '/RU', 'SYSTEM', '/F'], { stdio: 'inherit' });
+  } else {
+    execFileSync('schtasks', ['/Create', '/TN', TASK_NAME, '/TR', `"${wrapperPath}"`, '/SC', 'ONLOGON', '/RL', 'HIGHEST', '/F'], { stdio: 'inherit' });
+  }
+  logOk('Scheduled task created');
+
+  saveLevel(level);
+
+  // Set up SSH for multi-user support (system service only)
+  // Only ensure OpenSSH is available — key generation is handled at runtime
+  // by ensureServiceKeyAtRuntime() in terminal-server.js, which runs as SYSTEM
+  // so the key is owned by SYSTEM and OpenSSH accepts it.
+  if (level === 'system') {
+    ensureOpenSSHServer();
+    log('SSH service key will be generated on first run (as SYSTEM)');
+  }
+
+  execFileSync('schtasks', ['/Run', '/TN', TASK_NAME], { stdio: 'inherit' });
+  logOk('Task started');
+
+  logOk(`Spaces installed as ${level} service`);
+}
+
+async function win32Uninstall() {
+  try {
+    execFileSync('schtasks', ['/End', '/TN', TASK_NAME], { stdio: 'pipe' });
+    logOk('Task ended');
+  } catch {
+    log('Task was not running');
+  }
+
+  try {
+    execFileSync('schtasks', ['/Delete', '/TN', TASK_NAME, '/F'], { stdio: 'pipe' });
+    logOk('Scheduled task removed');
+  } catch {
+    log('Scheduled task was already removed');
+  }
+
+  try {
+    const wrapperPath = win32WrapperPath(loadLevel() || 'user');
+    fs.unlinkSync(wrapperPath);
+    logOk('Wrapper script removed');
+  } catch {
+    log('Wrapper script was already removed');
+  }
+
+  try {
+    fs.unlinkSync(LEVEL_PATH);
+  } catch {}
+
+  logOk('Spaces service uninstalled');
+}
+
+async function win32Start() {
+  // Regenerate wrapper script so it always points to the latest installed version
+  const level = loadLevel() || 'user';
+  win32WrapperScript(level);
+
+  // Clear stale update-check cache so the UI refreshes after an upgrade
+  try { fs.unlinkSync(path.join(SPACES_DIR, 'update-check.json')); } catch {}
+
+  // Try schtasks /Run first (works when running as admin or for user-level tasks)
+  try {
+    execFileSync('schtasks', ['/Run', '/TN', TASK_NAME], { stdio: 'pipe' });
+    logOk('Task started');
+    return;
+  } catch {}
+
+  // Fallback: launch the wrapper script directly as a detached process.
+  // This works for non-admin shells when the task is registered as SYSTEM.
+  // The service will run as the current user, not SYSTEM, but functionally
+  // equivalent for local development.
+  const wrapperPath = win32WrapperPath(level);
+  if (!fs.existsSync(wrapperPath)) {
+    logErr('Wrapper script not found — run "spaces service install" first');
+    process.exit(1);
+  }
+
+  const { spawn } = require('child_process');
+  const child = spawn('cmd.exe', ['/c', wrapperPath], {
+    detached: true,
+    stdio: 'ignore',
+    windowsHide: true,
+  });
+  child.unref();
+  logOk('Service started (direct launch)');
+}
+
+async function win32Stop() {
+  try {
+    execFileSync('schtasks', ['/End', '/TN', TASK_NAME], { stdio: 'pipe' });
+  } catch {}
+
+  // Kill the actual node processes on our ports (verify it's node before killing)
+  const config = resolveConfig();
+  const ports = [config.port || 3457, 3400];
+  let killed = 0;
+  for (const port of ports) {
+    try {
+      const output = execFileSync('netstat', ['-ano'], { encoding: 'utf-8' });
+      for (const line of output.split(String.fromCharCode(10))) {
+        if (line.includes(':' + port + ' ') && line.includes('LISTENING')) {
+          const parts = line.trim().split(/\s+/);
+          const pid = parseInt(parts[parts.length - 1], 10);
+          if (pid > 0) {
+            // Verify the process is node.exe before killing to avoid terminating unrelated processes
+            try {
+              const taskInfo = execFileSync('tasklist', ['/FI', `PID eq ${pid}`, '/FO', 'CSV', '/NH'], { encoding: 'utf-8' });
+              if (!taskInfo.toLowerCase().includes('node.exe')) continue;
+              process.kill(pid, 'SIGTERM'); killed++;
+            } catch {}
+          }
+        }
+      }
+    } catch {}
+  }
+
+  if (killed > 0) {
+    logOk('Stopped ' + killed + ' process(es)');
+  } else {
+    logOk('Task stopped');
+  }
+}
+
+async function win32Status() {
+  try {
+    execFileSync('schtasks', ['/Query', '/TN', TASK_NAME, '/V', '/FO', 'LIST'], { stdio: 'inherit' });
+  } catch {
+    log('Spaces service is not installed');
+  }
+}
+
+async function win32Logs() {
+  ensureLogsDir();
+  const outLogPath = path.join(LOGS_DIR, 'spaces.out.log');
+  if (!fs.existsSync(outLogPath)) {
+    logErr(`Log file not found: ${outLogPath}`);
+    log('Service may not have started yet');
+    process.exit(1);
+  }
+  spawnSync('powershell', ['-Command', `Get-Content "${outLogPath}" -Wait -Tail 50`], { stdio: 'inherit' });
+}
+
+// ─── Dispatch table ──────────────────────────────────────────
+const platforms = {
+  linux: { install: linuxInstall, uninstall: linuxUninstall, start: linuxStart, stop: linuxStop, status: linuxStatus, logs: linuxLogs },
+  darwin: { install: darwinInstall, uninstall: darwinUninstall, start: darwinStart, stop: darwinStop, status: darwinStatus, logs: darwinLogs },
+  win32: { install: win32Install, uninstall: win32Uninstall, start: win32Start, stop: win32Stop, status: win32Status, logs: win32Logs },
+};
+
+// ─── CLI ──────────────────────────────────────────────────────
+async function main() {
+  const action = process.argv[2];
+  const platform = getPlatform();
+  const dispatch = platforms[platform];
+
+  if (!action || !dispatch[action]) {
+    log('Usage: spaces service <install|uninstall|start|stop|status|logs>');
+    process.exit(action ? 1 : 0);
+  }
+
+  await dispatch[action]();
+}
+
+main().catch((err) => {
+  logErr(err.message);
+  process.exit(1);
+});

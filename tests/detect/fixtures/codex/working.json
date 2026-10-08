@@ -1,0 +1,11 @@
+{
+  "agent": "codex",
+  "expectedState": "working",
+  "snapshot": {
+    "rows": ["• Working (12s · esc to interrupt)"],
+    "title": "codex",
+    "progress": null,
+    "cols": 80,
+    "rows_count": 1
+  }
+}

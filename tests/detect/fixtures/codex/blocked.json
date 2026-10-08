@@ -1,0 +1,11 @@
+{
+  "agent": "codex",
+  "expectedState": "blocked",
+  "snapshot": {
+    "rows": ["$ npm run deploy", "Allow command? [y/n]"],
+    "title": "Action Required — codex",
+    "progress": null,
+    "cols": 80,
+    "rows_count": 2
+  }
+}

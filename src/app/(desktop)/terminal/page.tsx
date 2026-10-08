@@ -1,0 +1,1518 @@
+'use client';
+
+import React, { useState, useEffect, useCallback, useRef } from 'react';
+import {
+  Plus, Loader2, Terminal, Search, MessageSquare, FolderOpen,
+  Clock, ChevronDown, ChevronRight, Save, FolderInput, Trash2, Pencil, Check, X,
+  Layers, Copy, Home, XCircle, ArrowLeftToLine, Globe, AlertCircle, Users, Maximize2, Wand2,
+} from 'lucide-react';
+import { useRouter } from 'next/navigation';
+import { TerminalPane } from '@/components/terminal/terminal-pane';
+import { DndContext, closestCenter, KeyboardSensor, PointerSensor, useSensor, useSensors, type DragEndEvent } from '@dnd-kit/core';
+import { SortableContext, useSortable, verticalListSortingStrategy, arrayMove } from '@dnd-kit/sortable';
+import { CSS } from '@dnd-kit/utilities';
+import { Group as PanelGroup, Panel, Separator as PanelResizeHandle } from 'react-resizable-panels';
+import { ColorPicker } from '@/components/common/color-picker';
+import { DevDirectoryPicker } from '@/components/common/dev-directory-picker';
+import { NodeSelector } from '@/components/network/node-selector';
+import { TotpGate } from '@/components/auth/totp-gate';
+import { AGENT_TYPES, AGENT_LIST } from '@/lib/agents';
+import type { PaneData } from '@/lib/db/queries';
+import type { SessionWithMeta, Workspace } from '@/types/claude';
+import { useRemoteWorkspaces } from '@/hooks/use-sessions';
+import { ActivityPanel } from '@/components/bus/activity-panel';
+import { useSSEBusEvents } from '@/hooks/use-sse';
+import { api } from '@/lib/api';
+import { track } from '@/lib/telemetry';
+import { FileExplorer } from '@/components/files/file-explorer';
+import { ViewerPane } from '@/components/files/viewer-pane';
+import { useTier } from '@/hooks/use-tier';
+import { ProjectWizard } from '@/components/wizard/project-wizard';
+import { WorkspaceTodos } from '@/components/workspace/workspace-todos';
+import { ClaudeUsageStrip } from '@/components/claude/claude-usage-strip';
+
+function ResizablePaneGrid({ panes, renderPane }: {
+  panes: PaneData[];
+  renderPane: (pane: PaneData, dragHandleProps: Record<string, any>) => React.ReactNode;
+}) {
+  if (panes.length === 0) return null;
+
+  // Single pane — no resize handles needed
+  if (panes.length === 1) {
+    return (
+      <div className="flex-1 p-1 overflow-hidden">
+        <SortablePane id={panes[0].id}>
+          {(dragHandleProps) => renderPane(panes[0], dragHandleProps)}
+        </SortablePane>
+      </div>
+    );
+  }
+
+  // Split panes into rows: 2 per row for 2-4 panes, 3 per row for 5+
+  const cols = panes.length <= 4 ? 2 : 3;
+  const rows: PaneData[][] = [];
+  for (let i = 0; i < panes.length; i += cols) {
+    rows.push(panes.slice(i, i + cols));
+  }
+
+  return (
+    <PanelGroup orientation="vertical" className="flex-1 p-1">
+      {rows.map((row, rowIdx) => (
+        <React.Fragment key={`row-${rowIdx}`}>
+          {rowIdx > 0 && (
+            <PanelResizeHandle className="h-1.5 flex items-center justify-center group cursor-row-resize">
+              <div className="w-8 h-0.5 rounded-full bg-zinc-700 group-hover:bg-zinc-500 group-active:bg-indigo-500 transition-colors" />
+            </PanelResizeHandle>
+          )}
+          <Panel minSize={15}>
+            {row.length === 1 ? (
+              <div className="h-full p-0.5">
+                <SortablePane id={row[0].id}>
+                  {(dragHandleProps) => renderPane(row[0], dragHandleProps)}
+                </SortablePane>
+              </div>
+            ) : (
+              <PanelGroup orientation="horizontal" className="h-full">
+                {row.map((pane, colIdx) => (
+                  <React.Fragment key={pane.id}>
+                    {colIdx > 0 && (
+                      <PanelResizeHandle className="w-1.5 flex items-center justify-center group cursor-col-resize">
+                        <div className="h-8 w-0.5 rounded-full bg-zinc-700 group-hover:bg-zinc-500 group-active:bg-indigo-500 transition-colors" />
+                      </PanelResizeHandle>
+                    )}
+                    <Panel minSize={15}>
+                      <div className="h-full p-0.5">
+                        <SortablePane id={pane.id}>
+                          {(dragHandleProps) => renderPane(pane, dragHandleProps)}
+                        </SortablePane>
+                      </div>
+                    </Panel>
+                  </React.Fragment>
+                ))}
+              </PanelGroup>
+            )}
+          </Panel>
+        </React.Fragment>
+      ))}
+    </PanelGroup>
+  );
+}
+
+function SortablePane({ id, children }: { id: string; children: (dragHandleProps: Record<string, any>) => React.ReactNode }) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id });
+  const style = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    opacity: isDragging ? 0.5 : 1,
+    zIndex: isDragging ? 50 : 'auto' as any,
+  };
+  return (
+    <div ref={setNodeRef} style={style} className="h-full">
+      {children({ ...attributes, ...listeners })}
+    </div>
+  );
+}
+
+export default function TerminalPage() {
+  return (
+    <TotpGate>
+      {(terminalToken) => <TerminalPageInner terminalToken={terminalToken} />}
+    </TotpGate>
+  );
+}
+
+function TerminalPageInner({ terminalToken }: { terminalToken: string }) {
+  const router = useRouter();
+  const { basePath, hasNetwork, hasCollaboration } = useTier();
+  const [panes, setPanes] = useState<PaneData[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [wsLoading, setWsLoading] = useState(true);
+  const [showAdd, setShowAdd] = useState(false);
+  const [maximized, setMaximized] = useState<string | null>(null);
+  const [minimized, setMinimized] = useState<Set<string>>(new Set());
+  const [poppedOut, setPoppedOut] = useState<Set<string>>(new Set());
+  const [entered, setEntered] = useState(false);
+  const [busPanelCollapsed, setBusPanelCollapsed] = useState(true);
+
+  // SSE bus events for real-time updates
+  useSSEBusEvents();
+
+  // Experimental feature toggles (read-once on mount)
+  const [todosEnabled, setTodosEnabled] = useState(false);
+  useEffect(() => {
+    fetch(api('/api/config'))
+      .then(r => r.json())
+      .then(data => setTodosEnabled(!!data.todosEnabled))
+      .catch(() => {});
+  }, []);
+
+  // Workspace state
+  const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
+  const [activeWorkspace, setActiveWorkspace] = useState<Workspace | null>(null);
+  const [showWsPicker, setShowWsPicker] = useState(false);
+  const [showSaveAs, setShowSaveAs] = useState(false);
+  const [showWizard, setShowWizard] = useState(false);
+  const [saveAsName, setSaveAsName] = useState('');
+  const [saveAsColor, setSaveAsColor] = useState('#6366f1');
+  const [editingWs, setEditingWs] = useState<number | null>(null);
+  const [editWsName, setEditWsName] = useState('');
+  const [colorPickerWs, setColorPickerWs] = useState<number | null>(null);
+  const colorPickerRef = useRef<HTMLDivElement>(null);
+  const [showFiles, setShowFiles] = useState(false);
+  const [browseTarget, setBrowseTarget] = useState<string | null>(null);
+
+  const handleBrowse = useCallback((cwd: string) => {
+    setBrowseTarget(cwd);
+    setShowFiles(true);
+  }, []);
+
+  // New pane form state
+  const [newTitle, setNewTitle] = useState('');
+  const [newCwd, setNewCwd] = useState('');
+  const [newColor, setNewColor] = useState('#6366f1');
+  const [newClaudeSession, setNewClaudeSession] = useState('');
+  const [newAgentType, setNewAgentType] = useState('claude');
+  const [newAgentMode, setNewAgentMode] = useState<'new' | 'resume'>('new');
+  const [newCustomCommand, setNewCustomCommand] = useState('');
+  const [newNodeId, setNewNodeId] = useState('');
+
+  // Remote workspaces
+  const remoteWorkspacesQuery = useRemoteWorkspaces();
+  const [collapsedNodes, setCollapsedNodes] = useState<Set<string>>(new Set());
+  const toggleNodeCollapse = useCallback((nodeId: string) => {
+    setCollapsedNodes(prev => {
+      const next = new Set(prev);
+      if (next.has(nodeId)) next.delete(nodeId); else next.add(nodeId);
+      return next;
+    });
+  }, []);
+
+  // Session picker state
+  const [sessionSearch, setSessionSearch] = useState('');
+  const [sessions, setSessions] = useState<SessionWithMeta[]>([]);
+  const [sessionsLoading, setSessionsLoading] = useState(false);
+  const [showSessionPicker, setShowSessionPicker] = useState(false);
+  const [selectedSession, setSelectedSession] = useState<SessionWithMeta | null>(null);
+  const [filterByCwd, setFilterByCwd] = useState(true);
+  const pickerRef = useRef<HTMLDivElement>(null);
+  const wsPickerRef = useRef<HTMLDivElement>(null);
+  const channelRef = useRef<BroadcastChannel | null>(null);
+
+  // ─── Data Loading ──────────────────────────────────────────
+
+  const loadWorkspaces = useCallback(async () => {
+    const res = await fetch(api('/api/workspaces'));
+    const data = await res.json();
+    setWorkspaces(data);
+    const active = data.find((w: Workspace) => w.isActive);
+    setActiveWorkspace(active || null);
+    setWsLoading(false);
+    return active || null;
+  }, []);
+
+  const loadPanes = useCallback(async () => {
+    const res = await fetch(api('/api/panes'));
+    const data = await res.json();
+    setPanes(data);
+    // Track which panes were popped out
+    const popped = new Set<string>();
+    for (const p of data) {
+      if (p.isPopout) popped.add(p.id);
+    }
+    setPoppedOut(popped);
+    setLoading(false);
+  }, []);
+
+  useEffect(() => {
+    loadWorkspaces();
+  }, [loadWorkspaces]);
+
+  // Only load panes after entering a workspace
+  useEffect(() => {
+    if (entered) {
+      loadPanes();
+    }
+  }, [entered, loadPanes]);
+
+  // ─── BroadcastChannel for cross-window sync ────────────────
+
+  useEffect(() => {
+    const channel = new BroadcastChannel('spaces-panes');
+    channelRef.current = channel;
+
+    channel.onmessage = (event) => {
+      const msg = event.data;
+      if (msg.type === 'popout-opened') {
+        setPoppedOut(prev => new Set(prev).add(msg.paneId));
+      } else if (msg.type === 'popout-closed') {
+        setPoppedOut(prev => {
+          const next = new Set(prev);
+          next.delete(msg.paneId);
+          return next;
+        });
+        // Optimistically mark pane as not popped out in local state.
+        // Don't call loadPanes() here — the sendBeacon that sets isPopout=false
+        // in the DB is still in-flight, and loadPanes() would re-read the stale
+        // isPopout=true value and put the pane right back into poppedOut.
+        setPanes(prev => prev.map(p =>
+          p.id === msg.paneId ? { ...p, isPopout: false } : p
+        ));
+      } else if (msg.type === 'pane-updated') {
+        setPanes(prev => prev.map(p =>
+          p.id === msg.paneId ? { ...p, ...msg.data } : p
+        ));
+      }
+    };
+
+    return () => channel.close();
+  }, [loadPanes]);
+
+  // ─── Changes made from the terminal client ─────────────────
+  // The runtime writes spaces and panes from another process; the server
+  // notices and says so over SSE (see src/lib/sync/db-change-watcher.ts).
+  // Bursts — a space closed with all its panes — arrive as several events,
+  // so refetch once they settle.
+
+  useEffect(() => {
+    const es = new EventSource(api('/api/events?topics=spaces'));
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const onChanged = () => {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => {
+        loadWorkspaces();
+        if (entered) loadPanes();
+      }, 250);
+    };
+    es.addEventListener('spaces:changed', onChanged);
+    return () => {
+      if (timer) clearTimeout(timer);
+      es.removeEventListener('spaces:changed', onChanged);
+      es.close();
+    };
+  }, [entered, loadWorkspaces, loadPanes]);
+
+  // Counter that increments on workspace switch to trigger popout restore
+  const [restoreGen, setRestoreGen] = useState(0);
+
+  // Auto-restore popped-out panes on load and after workspace switch
+  useEffect(() => {
+    if (loading) return;
+    for (const pane of panes) {
+      if (pane.isPopout) {
+        openPopoutWindow(pane);
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loading, restoreGen]);
+
+  // ─── Session Search ────────────────────────────────────────
+
+  useEffect(() => {
+    if (!(AGENT_TYPES[newAgentType]?.supportsResume && newAgentMode === 'resume')) return;
+    setSessionsLoading(true);
+    const timer = setTimeout(() => {
+      const sp = new URLSearchParams({
+        sortBy: 'modified', sortDir: 'DESC', limit: '200',
+      });
+      if (sessionSearch) sp.set('search', sessionSearch);
+      if (filterByCwd && newCwd) sp.set('projectPath', newCwd);
+      sp.set('agentType', newAgentType);
+      fetch(api(`/api/sessions?${sp}`))
+        .then(r => r.json())
+        .then(data => { setSessions(data.sessions || []); setSessionsLoading(false); })
+        .catch(() => setSessionsLoading(false));
+    }, sessionSearch ? 300 : 0);
+    return () => clearTimeout(timer);
+  }, [newAgentType, newAgentMode, sessionSearch, filterByCwd, newCwd]);
+
+  // Close pickers on outside click
+  useEffect(() => {
+    function handleClick(e: MouseEvent) {
+      if (pickerRef.current && !pickerRef.current.contains(e.target as Node)) {
+        setShowSessionPicker(false);
+      }
+      if (wsPickerRef.current && !wsPickerRef.current.contains(e.target as Node)) {
+        setShowWsPicker(false);
+      }
+      if (colorPickerRef.current && !colorPickerRef.current.contains(e.target as Node)) {
+        setColorPickerWs(null);
+      }
+    }
+    document.addEventListener('mousedown', handleClick);
+    return () => document.removeEventListener('mousedown', handleClick);
+  }, []);
+
+  // ─── Pane Operations ──────────────────────────────────────
+
+  const addPane = useCallback(async () => {
+    const agent = AGENT_TYPES[newAgentType];
+    const cwd = newCwd
+      || (selectedSession?.projectPath)
+      || '/';
+
+    // For agent resume, pass the session ID; for new agent sessions, pass 'new'
+    let claudeSessionId: string | undefined;
+    if (newAgentType !== 'shell') {
+      if (newAgentMode === 'resume' && agent?.supportsResume) {
+        claudeSessionId = selectedSession?.sessionId || newClaudeSession;
+      } else {
+        claudeSessionId = 'new';
+      }
+    }
+
+    const title = newTitle
+      || (selectedSession ? (selectedSession.customName || selectedSession.firstPrompt?.slice(0, 50) || agent?.name || 'Agent') : '')
+      || (newAgentType === 'shell' ? 'Terminal' : agent?.name || 'Agent');
+
+    // Auto-opt-in to collaboration for agent panes when workspace has collaboration enabled
+    const autoCollab = activeWorkspace?.collaboration && newAgentType !== 'shell';
+
+    const res = await fetch(api('/api/panes'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        title, color: newColor, cwd, claudeSessionId,
+        agentType: newAgentType,
+        customCommand: newAgentType === 'custom' ? newCustomCommand : undefined,
+        nodeId: newNodeId || undefined,
+        isCollaborating: autoCollab || undefined,
+      }),
+    });
+    const pane = await res.json();
+    setPanes(prev => [...prev, pane]);
+    track('pane_created', { agentType: newAgentType });
+    setShowAdd(false);
+    setNewTitle('');
+    setNewCwd('');
+    setNewColor('#6366f1');
+    setNewClaudeSession('');
+    setNewAgentType('shell');
+    setNewAgentMode('new');
+    setNewCustomCommand('');
+    setNewNodeId('');
+    setSelectedSession(null);
+    setSessionSearch('');
+  }, [newTitle, newCwd, newColor, newClaudeSession, newAgentType, newAgentMode, newCustomCommand, newNodeId, selectedSession]);
+
+  const closePane = useCallback(async (id: string) => {
+    const closing = panes.find(p => p.id === id);
+    await fetch(api(`/api/panes/${id}`), { method: 'DELETE' });
+    setPanes(prev => prev.filter(p => p.id !== id));
+    if (closing) track('pane_closed', { agentType: closing.agentType });
+    if (maximized === id) setMaximized(null);
+    setPoppedOut(prev => {
+      const next = new Set(prev);
+      next.delete(id);
+      return next;
+    });
+  }, [maximized, panes]);
+
+  const updatePane = useCallback(async (id: string, data: Partial<PaneData>) => {
+    await fetch(api(`/api/panes/${id}`), {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    });
+    setPanes(prev => prev.map(p => p.id === id ? { ...p, ...data } : p));
+  }, []);
+
+  // File click → open in (or create) a Viewer pane in this workspace.
+  const handleOpenFile = useCallback(async (file: { path: string; name: string; ext: string }) => {
+    const existing = panes.find(p => p.agentType === 'viewer');
+
+    if (existing) {
+      const tabs = existing.viewerTabs || [];
+      const idx = tabs.findIndex(t => t.path === file.path);
+      if (idx >= 0) {
+        if (existing.viewerActiveTab !== idx) {
+          await updatePane(existing.id, { viewerActiveTab: idx } as Partial<PaneData>);
+        }
+      } else {
+        const newTabs = [...tabs, file];
+        await updatePane(existing.id, {
+          viewerTabs: newTabs,
+          viewerActiveTab: newTabs.length - 1,
+        } as Partial<PaneData>);
+      }
+      setMinimized(prev => {
+        if (!prev.has(existing.id)) return prev;
+        const next = new Set(prev);
+        next.delete(existing.id);
+        return next;
+      });
+      return;
+    }
+
+    // Create a new viewer pane, then seed it with this file.
+    const parentDir = file.path.replace(/[/\\][^/\\]*$/, '') || '/';
+    const res = await fetch(api('/api/panes'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        title: 'Viewer',
+        color: activeWorkspace?.color || '#06b6d4',
+        cwd: parentDir,
+        agentType: 'viewer',
+      }),
+    });
+    const pane = await res.json();
+    setPanes(prev => [...prev, { ...pane, viewerTabs: [file], viewerActiveTab: 0 }]);
+    track('pane_created', { agentType: 'viewer' });
+    fetch(api(`/api/panes/${pane.id}`), {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ viewerTabs: [file], viewerActiveTab: 0 }),
+    }).catch(() => {});
+  }, [panes, activeWorkspace, updatePane]);
+
+  // Duplicate a pane: same cwd, color, agent, but fresh session (no claudeSessionId).
+  // Title is "<base> (N)" where N is the next free integer among siblings sharing the base.
+  const duplicatePane = useCallback(async (id: string) => {
+    const source = panes.find(p => p.id === id);
+    if (!source) return;
+
+    // Strip an existing trailing " (N)" so re-duplicating "Foo (3)" produces "Foo (4)" (or next free), not "Foo (3) (2)"
+    const baseMatch = source.title.match(/^(.*?)(?:\s+\((\d+)\))?\s*$/);
+    const base = (baseMatch?.[1] || source.title).trim();
+
+    // Find max suffix among panes whose title is "<base>" or "<base> (N)"
+    const escaped = base.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const re = new RegExp(`^${escaped}(?:\\s+\\((\\d+)\\))?$`);
+    let maxN = 1;
+    for (const p of panes) {
+      const m = p.title.match(re);
+      if (!m) continue;
+      const n = m[1] ? parseInt(m[1], 10) : 1;
+      if (n > maxN) maxN = n;
+    }
+    const newTitle = `${base} (${maxN + 1})`;
+
+    const autoCollab = activeWorkspace?.collaboration && source.agentType !== 'shell';
+
+    const res = await fetch(api('/api/panes'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        title: newTitle,
+        color: source.color,
+        cwd: source.cwd,
+        agentType: source.agentType,
+        customCommand: source.customCommand,
+        nodeId: source.nodeId || undefined,
+        customModelId: source.customModelId || undefined,
+        isCollaborating: autoCollab || undefined,
+      }),
+    });
+    const pane = await res.json();
+    setPanes(prev => [...prev, pane]);
+    track('pane_duplicated', { agentType: source.agentType });
+  }, [panes, activeWorkspace]);
+
+  const toggleMaximize = useCallback((id: string) => {
+    setMaximized(prev => prev === id ? null : id);
+  }, []);
+
+  const minimizePane = useCallback((id: string) => {
+    setMinimized(prev => new Set(prev).add(id));
+    if (maximized === id) setMaximized(null);
+  }, [maximized]);
+
+  const restorePane = useCallback((id: string) => {
+    setMinimized(prev => { const next = new Set(prev); next.delete(id); return next; });
+  }, []);
+
+  // ─── Drag to reorder ──────────────────────────────────────
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
+    useSensor(KeyboardSensor),
+  );
+
+  const handleDragEnd = useCallback((event: DragEndEvent) => {
+    const { active, over } = event;
+    if (!over || active.id === over.id) return;
+    setPanes(prev => {
+      const oldIndex = prev.findIndex(p => p.id === active.id);
+      const newIndex = prev.findIndex(p => p.id === over.id);
+      if (oldIndex === -1 || newIndex === -1) return prev;
+      const reordered = arrayMove(prev, oldIndex, newIndex);
+      // Persist sort order
+      reordered.forEach((p, i) => {
+        if (p.sortOrder !== i) {
+          fetch(api(`/api/panes/${p.id}`), {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ sortOrder: i }),
+          }).catch(() => {});
+        }
+      });
+      return reordered.map((p, i) => ({ ...p, sortOrder: i }));
+    });
+  }, []);
+
+  // ─── Popout ────────────────────────────────────────────────
+
+  const openPopoutWindow = useCallback((pane: PaneData) => {
+    const w = pane.winWidth || 900;
+    const h = pane.winHeight || 600;
+    const x = pane.winX ?? Math.round(screen.width / 2 - w / 2);
+    const y = pane.winY ?? Math.round(screen.height / 2 - h / 2);
+    const features = `left=${x},top=${y},width=${w},height=${h},menubar=no,toolbar=no,location=no,status=no`;
+
+    window.open(api(`/terminal/pane/${pane.id}`), `spaces-pane-${pane.id}`, features);
+    setPoppedOut(prev => new Set(prev).add(pane.id));
+
+    // Mark in DB
+    fetch(api(`/api/panes/${pane.id}`), {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ isPopout: true, winX: x, winY: y, winWidth: w, winHeight: h }),
+    });
+  }, []);
+
+  const handlePopout = useCallback((id: string) => {
+    const pane = panes.find(p => p.id === id);
+    if (pane) openPopoutWindow(pane);
+  }, [panes, openPopoutWindow]);
+
+  // ─── Pop in (return popout to grid) ──────────────────────
+
+  const popIn = useCallback(async (id: string) => {
+    // Tell the popout window to close itself
+    channelRef.current?.postMessage({ type: 'close-popouts' });
+    // Mark as not popped out in DB
+    await fetch(api(`/api/panes/${id}`), {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ isPopout: false }),
+    });
+    setPoppedOut(prev => {
+      const next = new Set(prev);
+      next.delete(id);
+      return next;
+    });
+  }, []);
+
+  // ─── Close all popout windows ─────────────────────────────
+
+  const closeAllPopouts = useCallback(() => {
+    if (poppedOut.size > 0) {
+      channelRef.current?.postMessage({ type: 'close-popouts' });
+      setPoppedOut(new Set());
+    }
+  }, [poppedOut]);
+
+  // ─── Workspace Operations ──────────────────────────────────
+
+  const switchWorkspace = useCallback(async (wsId: number) => {
+    // Close all popout windows first (saves their positions)
+    closeAllPopouts();
+    await fetch(api('/api/workspaces'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'switch', workspaceId: wsId }),
+    });
+    setMaximized(null);
+    await loadWorkspaces();
+    await loadPanes();
+    setShowWsPicker(false);
+    if (entered) {
+      track('workspace_switched');
+    } else {
+      track('workspace_entered');
+    }
+    setEntered(true);
+    // Trigger popout restore for the new workspace's panes
+    setRestoreGen(prev => prev + 1);
+  }, [loadWorkspaces, loadPanes, closeAllPopouts, entered]);
+
+  const saveWorkspaceAs = useCallback(async () => {
+    if (!saveAsName.trim() || !activeWorkspace) return;
+    await fetch(api('/api/workspaces'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'duplicate', sourceId: activeWorkspace.id, name: saveAsName.trim(), color: saveAsColor }),
+    });
+    setSaveAsName('');
+    setSaveAsColor('#6366f1');
+    setShowSaveAs(false);
+    await loadWorkspaces();
+  }, [saveAsName, saveAsColor, activeWorkspace, loadWorkspaces]);
+
+  const createNewWorkspace = useCallback(async () => {
+    const res = await fetch(api('/api/workspaces'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'New Space', color: '#6366f1' }),
+    });
+    const ws = await res.json();
+    track('workspace_created');
+    await switchWorkspace(ws.id);
+  }, [switchWorkspace]);
+
+  const deleteWorkspace = useCallback(async (wsId: number) => {
+    closeAllPopouts();
+    await fetch(api(`/api/workspaces/${wsId}`), { method: 'DELETE' });
+    track('workspace_deleted');
+    await loadWorkspaces();
+    await loadPanes();
+    setShowWsPicker(false);
+  }, [loadWorkspaces, loadPanes, closeAllPopouts]);
+
+  const closeWorkspace = useCallback(() => {
+    closeAllPopouts();
+    setPanes([]);
+    setEntered(false);
+  }, [closeAllPopouts]);
+
+  const renameWorkspace = useCallback(async (wsId: number, name: string) => {
+    await fetch(api(`/api/workspaces/${wsId}`), {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name }),
+    });
+    setEditingWs(null);
+    await loadWorkspaces();
+  }, [loadWorkspaces]);
+
+  const changeWorkspaceColor = useCallback(async (wsId: number, color: string) => {
+    await fetch(api(`/api/workspaces/${wsId}`), {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ color }),
+    });
+    setColorPickerWs(null);
+    await loadWorkspaces();
+  }, [loadWorkspaces]);
+
+  // ─── Render ────────────────────────────────────────────────
+
+  const visiblePanes = panes.filter(p => !poppedOut.has(p.id) && !minimized.has(p.id));
+  const minimizedPanes = panes.filter(p => minimized.has(p.id));
+
+  // ─── Workspace chooser (before entering) ─────────────────
+
+  if (!entered) {
+    return (
+      <div className="h-screen flex flex-col bg-zinc-950 text-zinc-100">
+        <div className="absolute top-4 left-4">
+          <button
+            onClick={() => router.push('/')}
+            className="flex items-center gap-2 px-3 py-1.5 text-xs text-zinc-500 hover:text-white hover:bg-zinc-800 rounded-md transition-colors"
+          >
+            <Home className="w-3.5 h-3.5" />
+            Home
+          </button>
+        </div>
+        <div className="flex-1 flex items-center justify-center p-8 overflow-y-auto min-h-0">
+          <div className="w-full max-w-2xl my-auto">
+            <div className="text-center mb-10">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img src={`${basePath}/spaces_icon.png`} alt="Spaces" className="w-16 h-16 mx-auto mb-4" />
+              <h1 className="text-2xl font-bold mb-2">Spaces</h1>
+              <p className="text-zinc-400 text-sm">Choose a workspace to open, or create a new one.</p>
+            </div>
+
+            {wsLoading ? (
+              <div className="flex justify-center py-12">
+                <Loader2 className="w-6 h-6 animate-spin text-indigo-500" />
+              </div>
+            ) : (
+              <>
+                <div className="grid grid-cols-2 gap-3 mb-6">
+                  {workspaces.map((ws) => (
+                    <div
+                      key={ws.id}
+                      className="relative bg-zinc-900 border border-zinc-800 rounded-lg transition-all hover:border-zinc-600 hover:bg-zinc-800/50"
+                    >
+                      <button
+                        onClick={() => switchWorkspace(ws.id)}
+                        className="flex items-center gap-3 p-4 text-left w-full group"
+                      >
+                        <span
+                          className="w-3.5 h-3.5 rounded-full flex-shrink-0"
+                          style={{ backgroundColor: ws.color }}
+                        />
+                        <div className="flex-1 min-w-0">
+                          <div className="text-sm font-medium text-white truncate">{ws.name}</div>
+                          <div className="text-xs text-zinc-500 mt-0.5">
+                            {ws.paneCount || 0} pane{(ws.paneCount || 0) !== 1 ? 's' : ''}
+                            {ws.isActive && <span className="text-indigo-400 ml-2">last active</span>}
+                          </div>
+                        </div>
+                        <Terminal className="w-4 h-4 text-zinc-600 group-hover:text-zinc-400 transition-colors" />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="flex justify-center gap-3">
+                  <button
+                    onClick={createNewWorkspace}
+                    className="flex items-center gap-2 px-4 py-2.5 text-sm border border-zinc-700 text-zinc-400 rounded-lg hover:text-white hover:border-zinc-500 transition-colors"
+                  >
+                    <Plus className="w-4 h-4" />
+                    New Workspace
+                  </button>
+                  <button
+                    onClick={() => setShowWizard(true)}
+                    className="flex items-center gap-2 px-4 py-2.5 text-sm border border-dashed border-indigo-500/50 text-indigo-400 rounded-lg hover:text-indigo-300 hover:border-indigo-400 hover:bg-indigo-500/10 transition-colors"
+                  >
+                    <Wand2 className="w-4 h-4" />
+                    Plan a Project
+                  </button>
+                </div>
+
+                {/* Remote workspaces from network nodes */}
+                {hasNetwork && remoteWorkspacesQuery.isLoading && (
+                  <div className="flex items-center justify-center gap-2 py-4 mt-6 border-t border-zinc-800">
+                    <Loader2 className="w-4 h-4 animate-spin text-zinc-500" />
+                    <span className="text-xs text-zinc-500">Loading network spaces...</span>
+                  </div>
+                )}
+
+                {hasNetwork && remoteWorkspacesQuery.data?.remote && remoteWorkspacesQuery.data.remote.length > 0 && (
+                  <div className="mt-6 border-t border-zinc-800 pt-6">
+                    <div className="flex items-center gap-2 mb-4">
+                      <Globe className="w-4 h-4 text-zinc-500" />
+                      <h2 className="text-sm font-medium text-zinc-400">Network Spaces</h2>
+                    </div>
+
+                    {remoteWorkspacesQuery.data.remote.map((node) => (
+                      <div key={node.nodeId} className="mb-3">
+                        <button
+                          onClick={() => toggleNodeCollapse(node.nodeId)}
+                          className="flex items-center gap-2 w-full px-2 py-1.5 text-left text-xs text-zinc-400 hover:text-white rounded-md hover:bg-zinc-800/50 transition-colors"
+                        >
+                          {collapsedNodes.has(node.nodeId) ? (
+                            <ChevronRight className="w-3.5 h-3.5 text-zinc-600" />
+                          ) : (
+                            <ChevronDown className="w-3.5 h-3.5 text-zinc-600" />
+                          )}
+                          <Globe className="w-3 h-3 text-zinc-600" />
+                          <span className="font-medium">{node.nodeName}</span>
+                          <span className="text-zinc-600">
+                            {node.workspaces.length} space{node.workspaces.length !== 1 ? 's' : ''}
+                          </span>
+                        </button>
+
+                        {!collapsedNodes.has(node.nodeId) && (
+                          <div className="grid grid-cols-2 gap-2 mt-2 ml-5">
+                            {node.workspaces.map((ws) => (
+                              <button
+                                key={`${node.nodeId}-${ws.id}`}
+                                onClick={() => {
+                                  router.push(`/terminal/remote/${node.nodeId}/${ws.id}`);
+                                }}
+                                className="flex items-center gap-3 p-3 bg-zinc-900/50 border border-zinc-800/50 rounded-lg hover:border-zinc-600 hover:bg-zinc-800/30 transition-colors text-left group"
+                              >
+                                <span
+                                  className="w-3 h-3 rounded-full flex-shrink-0 ring-1 ring-zinc-700"
+                                  style={{ backgroundColor: ws.color }}
+                                />
+                                <div className="flex-1 min-w-0">
+                                  <div className="text-xs font-medium text-zinc-300 truncate">{ws.name}</div>
+                                  <div className="text-[10px] text-zinc-600 mt-0.5">
+                                    {ws.paneCount || 0} pane{(ws.paneCount || 0) !== 1 ? 's' : ''}
+                                  </div>
+                                </div>
+                                <Globe className="w-3 h-3 text-zinc-700 group-hover:text-zinc-500 transition-colors" />
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    ))}
+
+                    {/* Error indicators for nodes that failed */}
+                    {remoteWorkspacesQuery.data.errors && remoteWorkspacesQuery.data.errors.length > 0 && (
+                      <div className="mt-3 space-y-1">
+                        {remoteWorkspacesQuery.data.errors.map((err) => (
+                          <div key={err.nodeId} className="flex items-center gap-2 px-2 py-1.5 text-[10px] text-zinc-600">
+                            <AlertCircle className="w-3 h-3 text-red-500/50" />
+                            <span>{err.nodeName}: {err.error}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+        </div>
+
+        <ProjectWizard
+          isOpen={showWizard}
+          onClose={() => setShowWizard(false)}
+          onLaunch={(wsId) => {
+            setShowWizard(false);
+            switchWorkspace(wsId);
+          }}
+        />
+      </div>
+    );
+  }
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center h-screen bg-zinc-950">
+        <Loader2 className="w-6 h-6 animate-spin text-indigo-500" />
+      </div>
+    );
+  }
+
+  return (
+    <div className="h-screen flex flex-col bg-zinc-950 text-zinc-100">
+      {/* Header */}
+      <div className="flex items-center justify-between px-4 py-2 border-b border-zinc-800 flex-shrink-0">
+        <div className="flex items-center gap-3">
+          <button
+            onClick={closeWorkspace}
+            className="p-1.5 -ml-1 text-zinc-500 hover:text-white hover:bg-zinc-800 rounded-md transition-colors"
+            title="Close space and go home"
+          >
+            <Home className="w-4 h-4" />
+          </button>
+          <div className="w-px h-4 bg-zinc-800" />
+          <h1 className="text-sm font-semibold">Spaces</h1>
+
+          {/* Workspace selector */}
+          <div ref={wsPickerRef} className="relative">
+            <button
+              onClick={() => setShowWsPicker(!showWsPicker)}
+              className="flex items-center gap-1.5 px-2.5 py-1 text-xs bg-zinc-800 border border-zinc-700 rounded-md hover:border-zinc-600 transition-colors"
+            >
+              {activeWorkspace && (
+                <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ backgroundColor: activeWorkspace.color }} />
+              )}
+              <span className="max-w-[150px] truncate">{activeWorkspace?.name || 'No space'}</span>
+              <ChevronDown className="w-3 h-3 text-zinc-500" />
+            </button>
+
+            {showWsPicker && (
+              <div className="absolute z-50 top-full left-0 mt-1 w-72 bg-zinc-800 border border-zinc-700 rounded-md shadow-xl overflow-hidden">
+                <div className="p-2 border-b border-zinc-700/50 text-[10px] text-zinc-500 uppercase tracking-wider font-medium">
+                  Switch Space
+                </div>
+                <div className="max-h-[300px] overflow-y-auto">
+                  {workspaces.map((ws) => (
+                    <div key={ws.id} className="flex items-center gap-2 hover:bg-zinc-700/50 transition-colors group">
+                      {editingWs === ws.id ? (
+                        <div className="flex items-center gap-1 flex-1 px-3 py-2">
+                          <input
+                            autoFocus
+                            value={editWsName}
+                            onChange={(e) => setEditWsName(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') renameWorkspace(ws.id, editWsName);
+                              if (e.key === 'Escape') setEditingWs(null);
+                            }}
+                            className="flex-1 bg-transparent border border-zinc-600 rounded px-1.5 py-0.5 text-xs focus:outline-none focus:border-indigo-400"
+                          />
+                          <button onClick={() => renameWorkspace(ws.id, editWsName)} className="text-green-400 hover:text-green-300">
+                            <Check className="w-3 h-3" />
+                          </button>
+                        </div>
+                      ) : (
+                        <>
+                          <div className="relative pl-3">
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setColorPickerWs(colorPickerWs === ws.id ? null : ws.id);
+                              }}
+                              className="w-2.5 h-2.5 rounded-full flex-shrink-0 hover:ring-2 hover:ring-zinc-500/50 transition-all"
+                              style={{ backgroundColor: ws.color }}
+                              title="Change color"
+                            />
+                            {colorPickerWs === ws.id && (
+                              <div
+                                ref={colorPickerRef}
+                                className="absolute z-50 top-full left-0 mt-1.5 p-2 bg-zinc-800 border border-zinc-700 rounded-md shadow-xl"
+                                onClick={(e) => e.stopPropagation()}
+                              >
+                                <ColorPicker
+                                  value={ws.color}
+                                  onChange={(c) => changeWorkspaceColor(ws.id, c)}
+                                />
+                              </div>
+                            )}
+                          </div>
+                          <button
+                            onClick={() => switchWorkspace(ws.id)}
+                            className="flex items-center gap-2 flex-1 py-2 pr-3 text-left"
+                          >
+                            <span className="text-xs text-white truncate flex-1">{ws.name}</span>
+                            <span className="text-[10px] text-zinc-500">{ws.paneCount || 0} panes</span>
+                            {ws.isActive && <span className="text-[10px] text-indigo-400">active</span>}
+                          </button>
+                          <div className="flex items-center gap-0.5 pr-2 opacity-0 group-hover:opacity-100">
+                            <button
+                              onClick={(e) => { e.stopPropagation(); setEditingWs(ws.id); setEditWsName(ws.name); }}
+                              className="p-1 text-zinc-500 hover:text-white rounded"
+                              title="Rename"
+                            >
+                              <Pencil className="w-2.5 h-2.5" />
+                            </button>
+                            {!ws.isActive && workspaces.length > 1 && (
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  if (confirm(`Delete space "${ws.name}" and all its panes?`)) {
+                                    deleteWorkspace(ws.id);
+                                  }
+                                }}
+                                className="p-1 text-zinc-500 hover:text-red-400 rounded"
+                                title="Delete"
+                              >
+                                <Trash2 className="w-2.5 h-2.5" />
+                              </button>
+                            )}
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  ))}
+                </div>
+
+                <div className="border-t border-zinc-700/50 p-1.5 flex gap-1">
+                  <button
+                    onClick={createNewWorkspace}
+                    className="flex items-center gap-1.5 px-2.5 py-1.5 text-[11px] text-zinc-400 hover:text-white hover:bg-zinc-700 rounded transition-colors flex-1"
+                  >
+                    <Plus className="w-3 h-3" /> New Empty
+                  </button>
+                  <button
+                    onClick={() => { setShowWizard(true); setShowWsPicker(false); }}
+                    className="flex items-center gap-1.5 px-2.5 py-1.5 text-[11px] text-indigo-400 hover:text-indigo-300 hover:bg-indigo-500/10 rounded transition-colors flex-1"
+                  >
+                    <Wand2 className="w-3 h-3" /> Plan Project
+                  </button>
+                  <button
+                    onClick={() => { setShowSaveAs(true); setShowWsPicker(false); }}
+                    className="flex items-center gap-1.5 px-2.5 py-1.5 text-[11px] text-zinc-400 hover:text-white hover:bg-zinc-700 rounded transition-colors flex-1"
+                  >
+                    <Copy className="w-3 h-3" /> Duplicate
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+
+          <span className="text-[11px] text-zinc-500">
+            {visiblePanes.length} pane{visiblePanes.length !== 1 ? 's' : ''}
+            {poppedOut.size > 0 && ` + ${poppedOut.size} popped out`}
+          </span>
+        </div>
+
+        <div className="flex items-center gap-2">
+          <ClaudeUsageStrip enabled={panes.some(p => p.agentType === 'claude' && !poppedOut.has(p.id))} />
+          <button
+            onClick={() => setShowFiles(!showFiles)}
+            className={`flex items-center gap-1.5 px-2.5 py-1.5 text-xs rounded-md border transition-colors ${
+              showFiles
+                ? 'border-amber-500/50 bg-amber-600/20 text-amber-400'
+                : 'border-zinc-700 text-zinc-500 hover:text-zinc-300 hover:border-zinc-600'
+            }`}
+            title={showFiles ? 'Hide file explorer' : 'Show file explorer'}
+          >
+            <FolderOpen className="w-3.5 h-3.5" />
+            Files
+          </button>
+          {hasCollaboration && activeWorkspace && (
+            <button
+              onClick={async () => {
+                const newVal = !activeWorkspace.collaboration;
+                await fetch(api(`/api/workspaces/${activeWorkspace.id}`), {
+                  method: 'PUT',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ collaboration: newVal }),
+                });
+                setActiveWorkspace(prev => prev ? { ...prev, collaboration: newVal } : prev);
+                setWorkspaces(prev => prev.map(w => w.id === activeWorkspace.id ? { ...w, collaboration: newVal } : w));
+
+                // Sync all agent panes in this workspace to match the new collaboration state
+                const agentPanes = panes.filter(p => p.workspaceId === activeWorkspace.id && p.agentType !== 'shell');
+                for (const p of agentPanes) {
+                  if (p.isCollaborating !== newVal) {
+                    await updatePane(p.id, { isCollaborating: newVal } as Partial<PaneData>);
+                  }
+                }
+              }}
+              className={`flex items-center gap-1.5 px-2.5 py-1.5 text-xs rounded-md border transition-colors ${
+                activeWorkspace.collaboration
+                  ? 'border-indigo-500/50 bg-indigo-600/20 text-indigo-400'
+                  : 'border-zinc-700 text-zinc-500 hover:text-zinc-300 hover:border-zinc-600'
+              }`}
+              title={activeWorkspace.collaboration ? 'Collaboration enabled — click to disable' : 'Enable collaboration for this workspace'}
+            >
+              <Users className="w-3.5 h-3.5" />
+              Collab
+            </button>
+          )}
+          <button
+            onClick={closeWorkspace}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs border border-zinc-700 text-zinc-400 rounded-md hover:text-white hover:border-zinc-600 transition-colors"
+            title="Close space and return home"
+          >
+            <XCircle className="w-3.5 h-3.5" />
+            Close
+          </button>
+          <button
+            onClick={() => {
+              // Preseed the form from the most recent pane in this workspace.
+              // Falls back to the workspace color and 'claude' when the workspace is empty.
+              const recent = [...panes].sort((a, b) => (b.created || '').localeCompare(a.created || ''))[0];
+              if (recent) {
+                setNewCwd(recent.cwd || '');
+                setNewColor(recent.color || activeWorkspace?.color || '#6366f1');
+                setNewAgentType(recent.agentType || 'claude');
+                setNewCustomCommand(recent.agentType === 'custom' ? (recent.customCommand || '') : '');
+                setNewNodeId(recent.nodeId || '');
+              } else {
+                setNewCwd('');
+                setNewColor(activeWorkspace?.color || '#6366f1');
+                setNewAgentType('claude');
+                setNewCustomCommand('');
+                setNewNodeId('');
+              }
+              setNewTitle('');
+              setNewClaudeSession('');
+              setNewAgentMode('new');
+              setShowAdd(true);
+            }}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-indigo-600 text-white rounded-md hover:bg-indigo-500 transition-colors"
+          >
+          <Plus className="w-3.5 h-3.5" />
+          Add Pane
+        </button>
+        </div>
+      </div>
+
+      {/* Save-as dialog */}
+      {showSaveAs && (
+        <div className="border-b border-zinc-800 bg-zinc-900 px-4 py-3">
+          <div className="max-w-md flex items-center gap-2">
+            <Save className="w-4 h-4 text-indigo-400 flex-shrink-0" />
+            <input
+              autoFocus
+              type="text"
+              placeholder="New space name..."
+              value={saveAsName}
+              onChange={(e) => setSaveAsName(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && saveWorkspaceAs()}
+              className="flex-1 px-3 py-1.5 text-sm bg-zinc-800 border border-zinc-700 rounded-md focus:outline-none focus:border-indigo-500 text-white"
+            />
+            <ColorPicker value={saveAsColor} onChange={setSaveAsColor} />
+            <button
+              onClick={saveWorkspaceAs}
+              disabled={!saveAsName.trim()}
+              className="px-3 py-1.5 text-xs bg-indigo-600 text-white rounded-md hover:bg-indigo-500 disabled:opacity-50"
+            >
+              Save
+            </button>
+            <button
+              onClick={() => setShowSaveAs(false)}
+              className="p-1.5 text-zinc-400 hover:text-white"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Add pane dialog */}
+      {showAdd && (
+        <div className="border-b border-zinc-800 bg-zinc-900 px-4 py-4">
+          <div className="max-w-lg space-y-3">
+            <h3 className="text-sm font-semibold">Add Pane</h3>
+
+            {/* Agent type grid */}
+            <div>
+              <label className="text-[11px] text-zinc-400 mb-1.5 block">Agent</label>
+              <div className="grid grid-cols-3 gap-1.5">
+                {AGENT_LIST.map((agent) => (
+                  <button
+                    key={agent.id}
+                    onClick={() => {
+                      setNewAgentType(agent.id);
+                      setNewAgentMode('new');
+                      setSelectedSession(null);
+                      setNewClaudeSession('');
+                    }}
+                    className={`flex items-center gap-2 px-3 py-2 rounded-md border text-left transition-colors ${
+                      newAgentType === agent.id
+                        ? 'border-indigo-500 bg-indigo-600/20 text-white'
+                        : 'border-zinc-700 text-zinc-400 hover:text-white hover:border-zinc-600'
+                    }`}
+                  >
+                    <span
+                      className="w-2.5 h-2.5 rounded-full flex-shrink-0"
+                      style={{ backgroundColor: agent.color }}
+                    />
+                    <div className="min-w-0">
+                      <div className="text-xs font-medium truncate">{agent.name}</div>
+                      <div className="text-[10px] text-zinc-500 truncate">{agent.description}</div>
+                    </div>
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* New / Resume toggle (only for agents that support resume) */}
+            {AGENT_TYPES[newAgentType]?.supportsResume && (
+              <div className="flex gap-2">
+                <button
+                  onClick={() => { setNewAgentMode('new'); setSelectedSession(null); setNewClaudeSession(''); }}
+                  className={`px-3 py-1.5 text-xs rounded-md border transition-colors ${
+                    newAgentMode === 'new'
+                      ? 'bg-indigo-600 border-indigo-500 text-white'
+                      : 'border-zinc-700 text-zinc-400 hover:text-white hover:border-zinc-600'
+                  }`}
+                >
+                  New Session
+                </button>
+                <button
+                  onClick={() => setNewAgentMode('resume')}
+                  className={`px-3 py-1.5 text-xs rounded-md border transition-colors ${
+                    newAgentMode === 'resume'
+                      ? 'bg-indigo-600 border-indigo-500 text-white'
+                      : 'border-zinc-700 text-zinc-400 hover:text-white hover:border-zinc-600'
+                  }`}
+                >
+                  Resume Session
+                </button>
+              </div>
+            )}
+
+            {/* Custom command input */}
+            {newAgentType === 'custom' && (
+              <input
+                type="text"
+                placeholder="Command to run (e.g. python agent.py)"
+                value={newCustomCommand}
+                onChange={(e) => setNewCustomCommand(e.target.value)}
+                className="w-full px-3 py-2 text-sm bg-zinc-800 border border-zinc-700 rounded-md focus:outline-none focus:border-indigo-500 text-white font-mono"
+              />
+            )}
+
+            <NodeSelector value={newNodeId} onChange={setNewNodeId} />
+
+            <input
+              type="text"
+              placeholder="Title (optional)"
+              value={newTitle}
+              onChange={(e) => setNewTitle(e.target.value)}
+              className="w-full px-3 py-2 text-sm bg-zinc-800 border border-zinc-700 rounded-md focus:outline-none focus:border-indigo-500 text-white"
+            />
+
+            {newNodeId ? (
+              <div>
+                <label className="text-[11px] text-zinc-400 mb-1.5 block">Working directory (on remote node)</label>
+                <input
+                  type="text"
+                  placeholder="e.g. /home/user/project or ~ for home"
+                  value={newCwd}
+                  onChange={(e) => setNewCwd(e.target.value)}
+                  className="w-full px-3 py-2 text-sm bg-zinc-800 border border-zinc-700 rounded-md focus:outline-none focus:border-indigo-500 text-white font-mono"
+                />
+              </div>
+            ) : (
+              <DevDirectoryPicker value={newCwd} onChange={setNewCwd} />
+            )}
+
+            {/* Session picker for resume mode */}
+            {AGENT_TYPES[newAgentType]?.supportsResume && newAgentMode === 'resume' && (
+              <div ref={pickerRef} className="relative">
+                {selectedSession ? (
+                  <div className="flex items-center gap-2 px-3 py-2 text-sm bg-zinc-800 border border-zinc-700 rounded-md">
+                    <MessageSquare className="w-3.5 h-3.5 text-indigo-400 flex-shrink-0" />
+                    <div className="flex-1 min-w-0">
+                      <div className="text-white truncate">
+                        {selectedSession.customName || selectedSession.firstPrompt?.slice(0, 60) || 'Untitled'}
+                      </div>
+                      <div className="text-[10px] text-zinc-500 flex items-center gap-2">
+                        <span>{selectedSession.projectName}</span>
+                        <span>{selectedSession.messageCount} msgs</span>
+                        <span className="font-mono">{selectedSession.sessionId.slice(0, 8)}...</span>
+                      </div>
+                    </div>
+                    <button
+                      onClick={() => { setSelectedSession(null); setShowSessionPicker(true); }}
+                      className="text-zinc-400 hover:text-white text-xs"
+                    >
+                      Change
+                    </button>
+                  </div>
+                ) : (
+                  <div
+                    className="flex items-center gap-2 px-3 py-2 text-sm bg-zinc-800 border border-zinc-700 rounded-md cursor-text"
+                    onClick={() => setShowSessionPicker(true)}
+                  >
+                    <Search className="w-3.5 h-3.5 text-zinc-500" />
+                    <input
+                      type="text"
+                      placeholder="Search sessions by name, prompt, or project..."
+                      value={sessionSearch}
+                      onChange={(e) => { setSessionSearch(e.target.value); setShowSessionPicker(true); }}
+                      onFocus={() => setShowSessionPicker(true)}
+                      className="flex-1 bg-transparent focus:outline-none text-white placeholder:text-zinc-500"
+                    />
+                    {newCwd && (
+                      <button
+                        onClick={(e) => { e.stopPropagation(); setFilterByCwd(!filterByCwd); }}
+                        className={`flex-shrink-0 px-1.5 py-0.5 text-[10px] rounded border transition-colors ${
+                          filterByCwd
+                            ? 'border-indigo-500/50 bg-indigo-600/20 text-indigo-400'
+                            : 'border-zinc-600 text-zinc-500 hover:text-zinc-400'
+                        }`}
+                        title={filterByCwd ? 'Showing sessions for this directory — click to show all' : 'Showing all sessions — click to filter by directory'}
+                      >
+                        {filterByCwd ? newCwd.split('/').pop() : 'All'}
+                      </button>
+                    )}
+                    <ChevronDown className="w-3.5 h-3.5 text-zinc-500" />
+                  </div>
+                )}
+
+                {showSessionPicker && !selectedSession && (
+                  <div className="absolute z-50 top-full left-0 right-0 mt-1 max-h-[300px] overflow-y-auto bg-zinc-800 border border-zinc-700 rounded-md shadow-xl">
+                    {sessionsLoading ? (
+                      <div className="flex items-center justify-center py-6">
+                        <Loader2 className="w-4 h-4 animate-spin text-zinc-400" />
+                        <span className="text-xs text-zinc-400 ml-2">Loading sessions...</span>
+                      </div>
+                    ) : sessions.length === 0 ? (
+                      <div className="py-4 px-3 text-xs text-zinc-500 text-center">
+                        {sessionSearch ? 'No sessions match your search' : 'No sessions found'}
+                      </div>
+                    ) : (
+                      sessions.map((s) => (
+                        <button
+                          key={s.sessionId}
+                          onClick={() => {
+                            setSelectedSession(s);
+                            setNewClaudeSession(s.sessionId);
+                            if (!newCwd && s.projectPath) setNewCwd(s.projectPath);
+                            if (!newTitle) setNewTitle(s.customName || '');
+                            setShowSessionPicker(false);
+                          }}
+                          className="w-full text-left px-3 py-2.5 hover:bg-zinc-700 border-b border-zinc-700/50 last:border-0 transition-colors"
+                        >
+                          <div className="flex items-start gap-2">
+                            <MessageSquare className="w-3.5 h-3.5 text-indigo-400 mt-0.5 flex-shrink-0" />
+                            <div className="flex-1 min-w-0">
+                              <div className="text-xs text-white truncate">
+                                {s.customName || s.firstPrompt?.slice(0, 70) || 'Untitled session'}
+                              </div>
+                              <div className="flex items-center gap-2 mt-0.5">
+                                <span className="text-[10px] text-indigo-400/70 flex items-center gap-0.5">
+                                  <FolderOpen className="w-2.5 h-2.5" />
+                                  {s.projectName}
+                                </span>
+                                <span className="text-[10px] text-zinc-500">{s.messageCount} msgs</span>
+                                <span className="text-[10px] text-zinc-500 flex items-center gap-0.5">
+                                  <Clock className="w-2.5 h-2.5" />
+                                  {new Date(s.modified).toLocaleDateString()}
+                                </span>
+                                {s.starred && <span className="text-[10px]">★</span>}
+                              </div>
+                              {s.tags?.length > 0 && (
+                                <div className="flex gap-1 mt-1">
+                                  {s.tags.map(t => (
+                                    <span key={t} className="text-[9px] px-1.5 py-0.5 bg-zinc-700 rounded text-zinc-400">{t}</span>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        </button>
+                      ))
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+
+            <div>
+              <label className="text-[11px] text-zinc-400 mb-1.5 block">Color</label>
+              <ColorPicker value={newColor} onChange={setNewColor} />
+            </div>
+
+            <div className="flex gap-2 pt-1">
+              <button
+                onClick={addPane}
+                disabled={newAgentType === 'custom' && !newCustomCommand.trim()}
+                className="px-4 py-2 text-sm bg-indigo-600 text-white rounded-md hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                Create
+              </button>
+              <button
+                onClick={() => setShowAdd(false)}
+                className="px-4 py-2 text-sm border border-zinc-700 text-zinc-400 rounded-md hover:text-white hover:border-zinc-600"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Popped-out pane indicators */}
+      {poppedOut.size > 0 && (
+        <div className="flex items-center gap-2 px-4 py-1.5 border-b border-zinc-800 bg-zinc-900/50">
+          <span className="text-[10px] text-zinc-500">Popped out:</span>
+          {panes.filter(p => poppedOut.has(p.id)).map(p => (
+            <div key={p.id} className="flex items-center gap-0.5">
+              <button
+                onClick={() => openPopoutWindow(p)}
+                className="flex items-center gap-1 px-2 py-0.5 text-[10px] bg-zinc-800 border border-zinc-700 rounded-l text-zinc-400 hover:text-white hover:border-zinc-600"
+                title="Focus popout window"
+              >
+                <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: p.color }} />
+                {p.title}
+              </button>
+              <button
+                onClick={() => popIn(p.id)}
+                className="px-1 py-0.5 text-[10px] bg-zinc-800 border border-zinc-700 border-l-0 rounded-r text-zinc-500 hover:text-white hover:border-zinc-600"
+                title="Pop back into grid"
+              >
+                <ArrowLeftToLine className="w-2.5 h-2.5" />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Workspace todos */}
+      {todosEnabled && <WorkspaceTodos workspace={activeWorkspace} />}
+
+      {/* File Explorer + Terminal grid + Activity Panel */}
+      <div className="flex-1 flex overflow-hidden min-h-0">
+        {showFiles && (
+          <div className="w-64 flex-shrink-0">
+            <FileExplorer
+              onClose={() => setShowFiles(false)}
+              navigateTo={browseTarget}
+              onOpenFile={handleOpenFile}
+              activeFilePath={(() => {
+                const v = panes.find(p => p.agentType === 'viewer');
+                return v?.viewerTabs?.[v.viewerActiveTab ?? 0]?.path;
+              })()}
+            />
+          </div>
+        )}
+        {visiblePanes.length === 0 && poppedOut.size === 0 && minimized.size === 0 ? (
+          <div className="flex-1 flex items-center justify-center">
+            <div className="text-center space-y-3">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img src={`${basePath}/spaces_icon.png`} alt="Spaces" className="w-16 h-16 mx-auto opacity-30" />
+              <p className="text-zinc-500">No panes yet.</p>
+              <p className="text-zinc-600 text-xs">Add a pane to start a shell, Claude, Codex, Gemini, or any agent.</p>
+              <button
+                onClick={() => setShowAdd(true)}
+                className="px-4 py-2 text-sm bg-indigo-600 text-white rounded-md hover:bg-indigo-500 inline-flex items-center gap-2"
+              >
+                <Plus className="w-4 h-4" />
+                Add your first pane
+              </button>
+            </div>
+          </div>
+        ) : visiblePanes.length === 0 ? (
+          <div className="flex-1 flex items-center justify-center">
+            <div className="text-center space-y-2">
+              <p className="text-zinc-500 text-sm">
+                {minimized.size > 0 && poppedOut.size > 0
+                  ? 'All panes are minimized or popped out.'
+                  : minimized.size > 0
+                  ? `All panes are minimized. Use the toolbar to restore them.`
+                  : 'All panes are popped out to separate windows.'}
+              </p>
+              <button
+                onClick={() => setShowAdd(true)}
+                className="px-3 py-1.5 text-xs text-zinc-400 hover:text-white border border-zinc-700 rounded-md hover:border-zinc-600 inline-flex items-center gap-1.5"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                Add another pane
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div className="flex-1 flex flex-col overflow-hidden min-h-0">
+            <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
+              <SortableContext items={visiblePanes.map(p => p.id)} strategy={verticalListSortingStrategy}>
+                <ResizablePaneGrid
+                  panes={maximized ? visiblePanes.filter(p => p.id === maximized) : visiblePanes}
+                  renderPane={(pane, dragHandleProps) => (
+                    pane.agentType === 'viewer' ? (
+                      <ViewerPane
+                        pane={pane}
+                        onClose={closePane}
+                        onUpdate={updatePane}
+                        isMaximized={maximized === pane.id}
+                        onToggleMaximize={toggleMaximize}
+                        onMinimize={minimizePane}
+                        dragHandleProps={dragHandleProps}
+                      />
+                    ) : (
+                      <TerminalPane
+                        pane={pane}
+                        onClose={closePane}
+                        onUpdate={updatePane}
+                        onDuplicate={duplicatePane}
+                        isMaximized={maximized === pane.id}
+                        onToggleMaximize={toggleMaximize}
+                        onMinimize={minimizePane}
+                        onPopout={handlePopout}
+                        onBrowse={handleBrowse}
+                        terminalToken={terminalToken}
+                        workspaceCollaboration={activeWorkspace?.collaboration}
+                        dragHandleProps={dragHandleProps}
+                      />
+                    )
+                  )}
+                />
+              </SortableContext>
+            </DndContext>
+
+            {/* Minimized panes dock */}
+            {minimizedPanes.length > 0 && (
+              <div className="flex items-center gap-1.5 px-2 py-1.5 border-t border-zinc-800 flex-shrink-0 overflow-x-auto bg-zinc-950">
+                {minimizedPanes.map(pane => (
+                  <button
+                    key={pane.id}
+                    onClick={() => restorePane(pane.id)}
+                    className="flex items-center gap-1.5 px-2.5 py-1 text-[11px] rounded-md border border-zinc-700 hover:border-zinc-500 bg-zinc-800/50 hover:bg-zinc-700/50 text-zinc-400 hover:text-white transition-colors flex-shrink-0"
+                    title={`Restore ${pane.title}`}
+                  >
+                    <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ backgroundColor: pane.color }} />
+                    <span className="truncate max-w-[100px]">{pane.title}</span>
+                    <Maximize2 className="w-2.5 h-2.5 text-zinc-500" />
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {activeWorkspace?.collaboration && (
+          <ActivityPanel
+            workspaceId={activeWorkspace?.id ?? null}
+            panes={visiblePanes.map(p => ({ id: p.id, title: p.title, agentType: p.agentType, color: p.color }))}
+            collapsed={busPanelCollapsed}
+            onToggle={() => setBusPanelCollapsed(!busPanelCollapsed)}
+          />
+        )}
+      </div>
+
+      <ProjectWizard
+        isOpen={showWizard}
+        onClose={() => setShowWizard(false)}
+        onLaunch={(wsId) => {
+          setShowWizard(false);
+          switchWorkspace(wsId);
+        }}
+      />
+    </div>
+  );
+}

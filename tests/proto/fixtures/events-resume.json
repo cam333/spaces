@@ -1,0 +1,4 @@
+{
+  "send": { "id": "r2", "method": "events.subscribe", "params": { "afterSeq": 0 } },
+  "expectResultKeys": ["gap", "events"]
+}

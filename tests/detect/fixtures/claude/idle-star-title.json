@@ -1,0 +1,13 @@
+{
+  "agent": "claude",
+  "expectedState": "idle",
+  "snapshot": {
+    "rows": [
+      "Done. Updated 3 files."
+    ],
+    "title": "✳ 47s · fleet-aware-model",
+    "progress": null,
+    "cols": 80,
+    "rows_count": 1
+  }
+}

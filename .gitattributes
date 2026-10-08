@@ -1,0 +1,8 @@
+# The protocol schema is machine-generated (scripts/export-protocol-schema.mjs)
+# and always emits LF. With core.autocrlf=true, a fresh Windows clone would
+# otherwise check this file out with CRLF, which permanently disagrees with
+# the generator's LF output and fails the CI-wired `npm run proto:check` on
+# an unmodified checkout. Scoped narrowly to docs/protocol rather than
+# `*.json` repo-wide so it can't surprise unrelated JSON files (config,
+# fixtures, etc.) that don't share this generated-and-diffed contract.
+docs/protocol/*.json text eol=lf

@@ -788,7 +788,8 @@ function launchRemote(dest, tuiArgs) {
   console.log(`  Connecting to ${dest}...`);
   ensureRemoteInstall(dest);
   const runStart = (loginShell) => spawnSync('ssh', remote.sshStartArgs(dest, { loginShell }), {
-    stdio: ['inherit', 'pipe', 'pipe'],
+    // No stdin, as for the probe in ensureRemoteInstall: nothing reads it.
+    stdio: ['ignore', 'pipe', 'pipe'],
     encoding: 'utf-8',
   });
   let r = runStart(false);
@@ -1695,7 +1696,10 @@ function ensureRemoteInstall(dest) {
   });
   if (probe.error || probe.status === 255) return;
   const plan = remote.planRemote(remote.parseProbe(probe.stdout), local);
-  const interactive = Boolean(process.stdin.isTTY && process.stdout.isTTY);
+  // isatty, not process.stdin.isTTY: touching process.stdin hands the
+  // terminal to Node's own reader, and the question below would never be
+  // answered (see lib/prompt.js).
+  const interactive = require('tty').isatty(0) && Boolean(process.stdout.isTTY);
   const { ask } = require('./lib/prompt');
 
   let spec;

@@ -8,6 +8,10 @@ const fs = require('fs');
  * Synchronous on purpose: the launcher decides what to run by falling
  * through a chain of top-level checks, and a question answered on a later
  * tick would let that chain carry on to the next command meanwhile.
+ *
+ * Reads fd 0 directly, so nothing in the process may touch `process.stdin`
+ * first: that sets up Node's own reader on the terminal, and this then
+ * waits forever. Use `require('tty').isatty(0)` to ask whether it is one.
  */
 function readLine({ read = (buf) => fs.readSync(0, buf, 0, 1, null) } = {}) {
   const byte = Buffer.alloc(1);

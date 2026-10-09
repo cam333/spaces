@@ -81,7 +81,7 @@ const MIN_NODE = [20, 9];
  * enough `spaces` treated an unknown command as "start the server".
  */
 const PROBE = inLoginShell([
-  'command -v node >/dev/null 2>&1 && echo "SPACES_NODE=$(node -v)"',
+  'command -v node >/dev/null 2>&1 && echo "SPACES_NODE=$(node -v)";',
   'if command -v spaces >/dev/null 2>&1; then',
   '  v=$(spaces --version 2>/dev/null); echo "SPACES_VERSION=$v";',
   '  case "$v" in 0.*|"") ;; *) spaces status --porcelain 2>/dev/null ;; esac;',

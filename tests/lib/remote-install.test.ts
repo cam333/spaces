@@ -156,3 +156,45 @@ describe('classifyInstallFailure', () => {
     }
   });
 });
+
+// The probe is shell code run on another machine; parsing it is not enough.
+describe.skipIf(process.platform === 'win32')('the probe, run by a real shell', () => {
+  const fs = require('fs');
+  const os = require('os');
+  const path = require('path');
+  const { spawnSync } = require('child_process');
+
+  function machine({ spaces }: { spaces: string | null }) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'spaces-probe-'));
+    const put = (name: string, body: string) => fs.writeFileSync(path.join(dir, name), `#!/bin/sh\n${body}\n`, { mode: 0o755 });
+    // Stands in for the login shell: runs the command it is given, nothing else.
+    put('login-shell', 'exec /bin/sh -c "$2"');
+    put('node', 'echo v22.1.0');
+    if (spaces) {
+      put('spaces', `case "$1" in --version) echo ${spaces};; status) echo SPACES_RUNNING=1; echo SPACES_LIVE_AGENTS=2;; esac`);
+    }
+    return dir;
+  }
+  function probe(dir: string) {
+    const r = spawnSync('/bin/sh', ['-c', sshProbeArgs('h').at(-1)!], {
+      encoding: 'utf-8',
+      env: { PATH: `${dir}:/usr/bin:/bin`, HOME: dir, SHELL: path.join(dir, 'login-shell') },
+    });
+    expect(r.stderr).toBe('');
+    return parseProbe(r.stdout);
+  }
+
+  it('reports a current install with its agents', () => {
+    expect(probe(machine({ spaces: '1.2.3' })))
+      .toEqual({ node: '22.1.0', missing: false, version: '1.2.3', running: true, liveAgents: 2 });
+  });
+
+  it('does not ask an old install for a status it does not have', () => {
+    expect(probe(machine({ spaces: '0.9.10' })))
+      .toEqual({ node: '22.1.0', missing: false, version: '0.9.10', running: null, liveAgents: null });
+  });
+
+  it('reports a machine without Spaces', () => {
+    expect(probe(machine({ spaces: null }))).toMatchObject({ node: '22.1.0', missing: true, version: null });
+  });
+});

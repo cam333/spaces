@@ -223,6 +223,27 @@ function resolveShell(agentType, { shellUser, sshKeyPath } = {}) {
  *   target account) remains the caller's job — this seam only spawns.
  * @returns {{ok: true, term: object, launchCommand: string} | {ok: false, error: string}}
  */
+/**
+ * node-pty 1.1.0 publishes its macOS `spawn-helper` without the execute bit,
+ * and every spawn then fails with "posix_spawnp failed". Set it once, the
+ * first time a pane starts; at run time rather than install time, so it
+ * holds however the package was installed (scripts skipped included).
+ */
+let spawnHelperChecked = false;
+function ensureSpawnHelperExecutable(fsMod = require('fs'), pathMod = require('path')) {
+  if (spawnHelperChecked || process.platform === 'win32') return;
+  spawnHelperChecked = true;
+  let root;
+  try { root = pathMod.dirname(require.resolve('node-pty/package.json')); } catch { return; }
+  for (const dir of [`prebuilds/${process.platform}-${process.arch}`, 'build/Release']) {
+    const helper = pathMod.join(root, dir, 'spawn-helper');
+    try {
+      const mode = fsMod.statSync(helper).mode;
+      if ((mode & 0o111) !== 0o111) fsMod.chmodSync(helper, mode | 0o755);
+    } catch { /* absent, or not ours to change: the spawn reports it */ }
+  }
+}
+
 function spawnPane({
   paneId, cwd, agentType = 'shell', cols = 120, rows = 30, env,
   runtime, workspaceId = null, customCommand, agentSession, ptyLib,
@@ -230,6 +251,7 @@ function spawnPane({
 } = {}) {
   let term;
   try {
+    if (!ptyLib) ensureSpawnHelperExecutable();
     const pty = ptyLib || require('node-pty');
     const resolved = resolveShell(agentType, { shellUser, sshKeyPath });
     if (resolved.error) return { ok: false, error: resolved.error };

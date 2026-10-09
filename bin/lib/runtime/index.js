@@ -890,6 +890,11 @@ function createRuntime({ nodeId = 'local', spacesDbPath, getApiPort, federationD
         if (!isPositiveInt(cols) || !isPositiveInt(rows)) return err('bad_request', 'cols and rows must be positive integers');
         const agentType = isNonEmptyString(params.agentType) ? params.agentType : 'shell';
         const cwd = isNonEmptyString(params.cwd) ? params.cwd : os.homedir();
+        // Said plainly, and the same on every platform: where the folder is
+        // missing, Linux starts the pane anyway and its shell then fails.
+        let isDir = false;
+        try { isDir = fs.statSync(cwd).isDirectory(); } catch { /* missing */ }
+        if (!isDir) return err('bad_request', `no such folder ${cwd}`);
         const paneId = crypto.randomUUID();
 
         const written = sessionStore.createPane({

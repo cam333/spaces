@@ -44,6 +44,9 @@
 
 use std::process::{Child, Command, Stdio};
 
+/// A fixed owner secret for the server this test boots in a temporary home.
+const TEST_SECRET: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
 /// Boot the real Node runtime on an ephemeral port, isolated from the
 /// developer's actual `~/.spaces` data. See the module docs.
 struct Server {
@@ -106,6 +109,9 @@ async fn boot() -> Server {
         .arg(&terminal_server)
         .env("SPACES_PORT", port.to_string())
         .env("SPACES_NO_DETECTION_UPDATE", "1")
+        // The owner's secret: the server answers only requests that prove
+        // they hold it, and this test connects as the owner.
+        .env("SPACES_INTERNAL_TOKEN", TEST_SECRET)
         // os.homedir() honors USERPROFILE on Windows, HOME on POSIX — set
         // both so this isolation holds on every platform CI runs it on.
         .env("HOME", &home_dir)
@@ -149,7 +155,7 @@ async fn boot() -> Server {
 async fn snapshot_and_events_agree_with_the_real_runtime() {
     let s = boot().await;
     let url = format!("ws://127.0.0.1:{}/proto", s.port);
-    let mut c = spaces_proto::client::ControlClient::connect(&url, None)
+    let mut c = spaces_proto::client::ControlClient::connect(&url, Some(TEST_SECRET))
         .await
         .expect("connect");
 

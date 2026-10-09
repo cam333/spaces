@@ -101,6 +101,7 @@ for (let i = 0; i < args.length; i++) {
   else if (args[i] === '--help' || args[i] === '-h') { cliFlags.help = true; }
   else if (args[i] === '--version' || args[i] === '-v') { cliFlags.version = true; }
   else if (args[i] === '--experimental') { cliFlags.experimental = true; }
+  else if (args[i] === '--yes' || args[i] === '-y') { cliFlags.yes = true; }
   else if (args[i] === 'whoami') { cliFlags.whoami = true; }
 }
 
@@ -193,11 +194,16 @@ if (cliFlags.help) {
     spaces                       Start the server (desktop mode by default)
     spaces tui                   Launch the terminal client
     spaces --remote you@host     The terminal client for Spaces on another machine,
-                                 over SSH (Spaces must be installed there)
+                                 over SSH. Offers to install Spaces there, or to
+                                 update it when it is older than this machine's
+    spaces --remote you@host --yes
+                                 The same, installing or updating without asking
     spaces start                 Start the server in the background, if it is not running
     spaces open                  Open the web app in your browser, signed in
     spaces signout               Sign out every browser and terminal client
     spaces stop                  Stop running server
+    spaces restart               Restart the server (through the service, if installed)
+    spaces status                Show the version, whether the server runs, and its agents
     spaces upgrade               Upgrade Spaces to the latest version
     spaces uninstall             Uninstall Spaces
     spaces --setup               Interactive first-time setup wizard
@@ -305,6 +311,11 @@ if (subcommand === 'start') {
   startDetached(args.slice(1));
 }
 
+// What `--remote` runs after updating the other machine; useful on its own too.
+if (subcommand === 'restart') {
+  restartServer();
+}
+
 // ─── Sign out everywhere ──────────────────────────────────
 if (subcommand === 'signout') {
   signOutEverywhere();
@@ -316,6 +327,10 @@ if (subcommand === 'open') {
   // sign-in redirect page fires. Part of this chain so it no longer falls
   // through to "Unknown command" while that timer is pending.
   openSignedIn();
+} else if (subcommand === 'status') {
+  // Asks the running server, so it waits on a socket: part of this chain
+  // for the same reason as `open`.
+  printStatus(args.includes('--porcelain'));
 } else if (cliFlags.setup) {
   require('./spaces-setup');
   // spaces-setup handles its own process.exit
@@ -460,7 +475,8 @@ function launchTui(tuiArgs, { fallbackToBrowser }) {
     process.exit(2);
   }
   if (remote !== null) {
-    launchRemote(remote, localArgs);
+    // `--yes` answers launchRemote's questions; the client has no such flag.
+    launchRemote(remote, localArgs.filter((a) => a !== '--yes' && a !== '-y'));
     return;
   }
 
@@ -767,8 +783,10 @@ function launchRemote(dest, tuiArgs) {
     process.exit(1);
   }
 
-  // 1. Make sure Spaces is running over there, and learn its port.
+  // 1. Make sure Spaces is running over there, and learn its port —
+  // installing or updating it first, with the user's say-so.
   console.log(`  Connecting to ${dest}...`);
+  ensureRemoteInstall(dest);
   const runStart = (loginShell) => spawnSync('ssh', remote.sshStartArgs(dest, { loginShell }), {
     stdio: ['inherit', 'pipe', 'pipe'],
     encoding: 'utf-8',
@@ -1591,6 +1609,174 @@ function findPidsOnPort(port) {
     }
   }
   return [...pids].filter(p => !isNaN(p) && p > 0);
+}
+
+/**
+ * `spaces restart`: stops the server and starts it again — through the OS
+ * service when one is installed, so the service manager keeps owning it
+ * (and its unit file is rewritten for the version now installed) — then
+ * waits until it answers. Running agents stop with it.
+ */
+function restartServer() {
+  const { portIsListening } = require('./spaces-tui');
+  const { serviceInstalled } = require('./lib/service-registration');
+  const port = resolvePort();
+  if (serviceInstalled()) {
+    const { spawnSync } = require('child_process');
+    const service = (action) => spawnSync(process.execPath, [path.join(__dirname, 'spaces-service.js'), action], {
+      stdio: 'inherit', env: process.env,
+    }).status;
+    service('stop');
+    // A server started by hand can hold the port beside a stopped service.
+    stopServer(port);
+    if (service('start') !== 0) {
+      console.error('  The service did not start; "spaces service logs" shows why.');
+      process.exit(1);
+    }
+    const deadline = Date.now() + SERVER_START_TIMEOUT_MS;
+    while (!portIsListening(port, 1000)) {
+      if (Date.now() > deadline) {
+        console.error(`  The service started, but nothing answered on port ${port} within ${SERVER_START_TIMEOUT_MS / 1000}s.`);
+        console.error('  "spaces service logs" shows why.');
+        process.exit(1);
+      }
+    }
+  } else {
+    stopServer(port);
+    if (!startBackgroundServer(port)) process.exit(1);
+  }
+  console.log(`  Spaces ${require('../package.json').version} is running on port ${port}.`);
+  process.exit(0);
+}
+
+/**
+ * `spaces status`: the installed version, whether the server runs, and how
+ * many agents are live in it. `--porcelain` prints `KEY=value` lines for
+ * `spaces --remote`, which asks this of the machine it connects to.
+ */
+async function printStatus(porcelain) {
+  const { portIsListening } = require('./spaces-tui');
+  const version = require('../package.json').version;
+  const port = resolvePort();
+  const running = portIsListening(port) && listenerIsMine(port);
+  let live = null;
+  if (running) {
+    const secret = require('./lib/desktop-auth').readSecret(SPACES_DIR);
+    if (secret) live = await require('./lib/status').liveAgents(port, secret);
+  }
+  if (porcelain) {
+    console.log(`SPACES_RUNNING=${running ? 1 : 0}`);
+    console.log(`SPACES_PORT=${port}`);
+    if (live !== null) console.log(`SPACES_LIVE_AGENTS=${live}`);
+  } else {
+    console.log(`  Spaces ${version}`);
+    if (!running) console.log(`  The server is not running (port ${port}).`);
+    else if (live === null) console.log(`  The server is running on port ${port}.`);
+    else console.log(`  The server is running on port ${port}, with ${live} live ${live === 1 ? 'agent' : 'agents'}.`);
+  }
+  process.exit(0);
+}
+
+/**
+ * Before `--remote` connects: installs Spaces on `dest` when it is missing,
+ * or updates it when it is older than this machine's — asking first unless
+ * `--yes`, and saying how many agents an update would stop. A remote that
+ * cannot be asked (an ssh failure, a shell that is not sh-like) is left to
+ * the connection step, which reports it as it always has.
+ */
+function ensureRemoteInstall(dest) {
+  const remote = require('./lib/remote');
+  const { spawnSync } = require('child_process');
+  const local = require('../package.json').version;
+  const probe = spawnSync('ssh', remote.sshProbeArgs(dest), {
+    stdio: ['inherit', 'pipe', 'pipe'], encoding: 'utf-8',
+  });
+  if (probe.error || probe.status === 255) return;
+  const plan = remote.planRemote(remote.parseProbe(probe.stdout), local);
+  const interactive = Boolean(process.stdin.isTTY && process.stdout.isTTY);
+  const { ask } = require('./lib/prompt');
+
+  let spec;
+  try {
+    spec = remote.installSpec(local, process.env.SPACES_REMOTE_PACKAGE);
+  } catch (e) {
+    console.error(`  ${e.message}`);
+    process.exit(2);
+  }
+  const install = ({ restart }) => {
+    console.log(`  Installing ${spec} on ${dest}. Compiling the terminal library can take a minute...`);
+    const r = spawnSync('ssh', remote.sshInstallArgs(dest, spec, { restart }), {
+      stdio: ['inherit', 'pipe', 'pipe'], encoding: 'utf-8',
+    });
+    if (r.status === 0) {
+      console.log(`  Spaces ${local} is installed on ${dest}.`);
+      return;
+    }
+    const output = `${r.stdout || ''}\n${r.stderr || ''}`;
+    for (const line of require('./spaces-tui').tailLines(output, 8)) console.error(`    ${line.trim()}`);
+    console.error(remote.installFailureHint(remote.classifyInstallFailure(output), dest, spec));
+    process.exit(1);
+  };
+
+  switch (plan.action) {
+    case 'connect':
+      return;
+    case 'newer':
+      console.log(`  Spaces on ${dest} is ${plan.remote}, newer than this machine's ${local}.`);
+      console.log(`  To update this machine: npm install -g ${remote.PACKAGE}`);
+      return;
+    case 'no-node':
+      console.error(`  Spaces is not installed on ${dest}, and neither is Node.js, which it needs (20.9 or newer).`);
+      console.error('  Install Node.js there first; nvm is the easiest way: https://github.com/nvm-sh/nvm');
+      process.exit(1);
+      break;
+    case 'old-node':
+      console.error(`  ${dest} has Node.js ${plan.node}; Spaces ${local} needs 20.9 or newer.`);
+      console.error('  Update Node.js there first; nvm is the easiest way: https://github.com/nvm-sh/nvm');
+      process.exit(1);
+      break;
+    case 'install': {
+      if (!cliFlags.yes) {
+        if (!interactive) {
+          console.error(remote.installHint(dest));
+          console.error('  Or run this again with --yes to install it.');
+          process.exit(1);
+        }
+        if (ask(`  Spaces is not installed on ${dest}. Install ${spec} there? [Y/n] `, ['y', 'n'], 'y') !== 'y') {
+          process.exit(1);
+        }
+      }
+      install({ restart: false });
+      return;
+    }
+    case 'update': {
+      const stops = plan.running === false ? 0 : plan.liveAgents;
+      if (!cliFlags.yes) {
+        if (!interactive) {
+          console.log(`  Spaces on ${dest} is ${plan.from}, older than this machine's ${local}; run with --yes to update it.`);
+          return;
+        }
+        if (stops === 0) {
+          const restarting = plan.running ? ' It restarts Spaces there; no agents are running.' : '';
+          if (ask(`  Spaces on ${dest} is ${plan.from}, older than this machine's ${local}. Update it?${restarting} [Y/n] `, ['y', 'n'], 'y') !== 'y') {
+            return;
+          }
+        } else {
+          console.log(`  Spaces on ${dest} is ${plan.from}, older than this machine's ${local}.`);
+          console.log(stops === null
+            ? `  Updating restarts Spaces on ${dest} and stops any agents running there.`
+            : `  Updating restarts Spaces on ${dest} and stops its ${stops} running ${stops === 1 ? 'agent' : 'agents'}.`);
+          const choice = ask(`  [u]pdate now, [c]onnect to ${plan.from} as it is, or [q]uit? [u/c/q] `, ['u', 'c', 'q'], null);
+          if (choice === 'q') process.exit(0);
+          if (choice !== 'u') return;
+        }
+      }
+      install({ restart: plan.running !== false });
+      return;
+    }
+    default:
+      return;
+  }
 }
 
 function stopServer(overridePort) {

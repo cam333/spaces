@@ -22,6 +22,8 @@ describe('findUnknownFlag', () => {
       ['whoami', '--federate', '100.64.0.1'],
       ['tui', '--desktop', '--port', '4000', '--url', 'ws://127.0.0.1:4000', '--token', 't'],
       ['tui', '--remote', 'me@host'],
+      ['--remote', 'me@host', '--yes'], ['--remote', 'me@host', '-y'],
+      ['status'], ['status', '--porcelain'], ['restart'],
       ['start', '--print-token'],
       ['start', '--multiuser', '--experimental'],
       ['stop', '--port', '4000'],

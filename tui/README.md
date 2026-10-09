@@ -40,9 +40,10 @@ is whatever your SSH setup already does, so keys, agents, `~/.ssh/config`
 aliases and jump hosts all work and nothing new is exposed.
 
 The destination is anything `ssh` accepts: `you@devbox`, an alias from
-`~/.ssh/config`, or `ssh://you@devbox:2222`. Spaces must be installed on the
-other machine; if it is not, the command to install it is printed. The
-remote server keeps running after you detach; `ssh you@devbox spaces stop`
+`~/.ssh/config`, or `ssh://you@devbox:2222`. If Spaces is missing on the
+other machine, or older than yours, it offers to install or update it
+first, saying how many running agents an update would stop; `--yes` skips
+the questions. The remote server keeps running after you detach; `ssh you@devbox spaces stop`
 shuts it down.
 
 Under `--remote`, the Files tab shows the remote machine, downloads land on

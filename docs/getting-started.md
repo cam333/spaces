@@ -103,7 +103,7 @@ empty, your home folder is used. They are stored as `devDirectories` in
 
 ## 5. Spaces on another machine
 
-Install Spaces on the other machine too, then from your own:
+From your own machine:
 
 ```bash
 spaces --remote you@devbox
@@ -113,6 +113,13 @@ Spaces connects with `ssh`, starts Spaces on `devbox` if it is not running,
 opens a tunnel to it, and runs your local terminal client through the
 tunnel. Anything `ssh` accepts works as the destination: `you@devbox`, a
 `~/.ssh/config` alias, or `ssh://you@devbox:2222`.
+
+If Spaces is not on that machine yet, or is older than yours, `--remote`
+offers to install or update it first (`npm install -g` over the same SSH
+login; Node.js 20.9 or newer must already be there). An update restarts the
+remote server, which stops the agents running in it, so it says how many
+would stop and lets you update, connect to the old version as it is, or
+quit. `--yes` answers yes to all of it, for scripts.
 
 Nothing new is exposed on `devbox`: its server stays on its own loopback,
 and the only way in is your SSH login. The terminal client receives a

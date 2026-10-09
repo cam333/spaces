@@ -98,13 +98,19 @@ spaces --remote you@devbox
 ```
 
 This connects your local terminal client to Spaces on `devbox` over SSH. It
-starts Spaces there if it is not running (Spaces must be installed on that
-machine), opens an SSH tunnel to it, and signs in with a session token the
+starts Spaces there if it is not running, opens an SSH tunnel to it, and signs in with a session token the
 remote hands back over SSH. The remote's secret never leaves it, the remote
 keeps listening only on its own loopback, and authentication is whatever
 your SSH already does: keys, agents, `~/.ssh/config` aliases and jump hosts
 all work. The remote server keeps running after you detach;
 `ssh you@devbox spaces stop` stops it.
+
+If Spaces is not on that machine yet, or is older than yours, `--remote`
+offers to install or update it first (`npm install -g` over the same SSH
+login; Node.js 20.9 or newer must already be there). An update restarts the
+remote server, which stops the agents running in it, so it says how many
+would stop and lets you update, connect to the old version as it is, or
+quit. `--yes` answers yes to all of it, for scripts.
 
 ## Commands
 
@@ -112,10 +118,12 @@ all work. The remote server keeps running after you detach;
 | --- | --- |
 | `spaces` | In a terminal: the terminal client, starting a background server first if needed. Without a terminal (a script, a service): the server, in the foreground. |
 | `spaces tui` | The terminal client, explicitly. Never falls back to the browser. |
-| `spaces --remote <dest>` | The terminal client for Spaces on another machine, over SSH. |
+| `spaces --remote <dest>` | The terminal client for Spaces on another machine, over SSH. Offers to install or update Spaces there first; `--yes` skips the questions. |
 | `spaces start` | Start the server in the background, if it is not running. |
 | `spaces open` | Open the web app in your browser, signed in. |
 | `spaces stop` | Stop the server. |
+| `spaces restart` | Restart the server, through the service when one is installed. Running agents stop with it. |
+| `spaces status` | The installed version, whether the server runs, and how many agents are live in it. |
 | `spaces signout` | Sign out every browser, terminal client and remote session (rotates the secret). |
 | `spaces service install` | Start Spaces at login as a service (systemd, launchd or Task Scheduler). Also `uninstall`, `start`, `stop`, `status`, `logs`. |
 | `spaces upgrade` / `spaces uninstall` | Upgrade or remove the global package. |

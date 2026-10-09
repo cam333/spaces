@@ -40,7 +40,11 @@ The first public open-source release, under the Apache License 2.0.
   delete; and edit text files with conflict detection.
 - `spaces --remote you@host`: the terminal client for Spaces on another
   machine, over SSH, starting Spaces there if needed. Nothing is exposed
-  beyond your SSH login.
+  beyond your SSH login. It offers to install Spaces there, or to update an
+  older install, saying first how many running agents an update would stop;
+  `--yes` skips the questions.
+- `spaces status` and `spaces restart` (through the service when one is
+  installed).
 - Live sync with the web app: changes on either side appear on the other
   within about a second.
 

@@ -18,7 +18,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/jlongo78/agent-spaces.git"
+    "url": "git+https://github.com/jlongo78/spaces.git"
   },
   "keywords": [
     "ai",
@@ -31,7 +31,7 @@
   ],
   "homepage": "https://www.agentspaces.co",
   "bugs": {
-    "url": "https://github.com/jlongo78/agent-spaces/issues"
+    "url": "https://github.com/jlongo78/spaces/issues"
   },
   "author": "John Longo",
   "license": "Apache-2.0",

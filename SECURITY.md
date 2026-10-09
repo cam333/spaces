@@ -7,7 +7,7 @@ someone a shell on your machine, so security reports get priority.
 
 Please report privately, not in a public issue:
 
-1. Go to <https://github.com/jlongo78/agent-spaces/security>.
+1. Go to <https://github.com/jlongo78/spaces/security>.
 2. Choose **Report a vulnerability**.
 3. Describe the problem, the version (`npm ls -g @jlongo78/agent-spaces`),
    your operating system, and the steps or proof of concept that show it.

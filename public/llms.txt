@@ -15,11 +15,10 @@ agent-to-human communication.
 
 - [Agent guide](/agent-guide.md): how a coding agent inside a Spaces pane
   identifies its environment and uses the message bus
-- [Getting started](https://raw.githubusercontent.com/jlongo78/agent-spaces/main/docs/getting-started.md): install and first run
-- [Architecture](https://raw.githubusercontent.com/jlongo78/agent-spaces/main/docs/architecture.md): server, runtime, clients, and how they fit
-- [Server install](https://raw.githubusercontent.com/jlongo78/agent-spaces/main/docs/server-install.md): multiuser and service installation
+- [Getting started](https://raw.githubusercontent.com/jlongo78/spaces/main/docs/getting-started.md): install and first run
+- [Architecture](https://raw.githubusercontent.com/jlongo78/spaces/main/docs/architecture.md): server, runtime, clients, and how they fit
 
 ## Optional
 
-- [Source repository](https://github.com/jlongo78/agent-spaces)
+- [Source repository](https://github.com/jlongo78/spaces)
 - [Homepage](http://www.agentspaces.co)

@@ -1088,7 +1088,7 @@ function startServer() {
       const pkg = require(path.join(projectDir, 'package.json'));
       const currentVersion = pkg.version;
       const npmName = pkg.name || '@jlongo78/agent-spaces';
-      const githubRepo = 'jlongo78/agent-spaces';
+      const githubRepo = 'jlongo78/spaces';
 
       // Check npm registry
       let npmLatest = null;

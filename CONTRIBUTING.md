@@ -15,7 +15,7 @@ Linux, `node-pty` compiles during install and needs `python3`, `make` and a
 C++ compiler.
 
 ```bash
-git clone https://github.com/jlongo78/agent-spaces.git
+git clone https://github.com/jlongo78/spaces.git
 cd agent-spaces
 npm ci
 npm run build        # production build of the web app

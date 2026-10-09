@@ -14,7 +14,7 @@
 
 <p align="center">
   <a href="https://www.npmjs.com/package/@jlongo78/agent-spaces"><img src="https://img.shields.io/npm/v/@jlongo78/agent-spaces?style=flat-square&color=cb3837" alt="npm" /></a>
-  <a href="https://github.com/jlongo78/agent-spaces/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/jlongo78/agent-spaces/ci.yml?style=flat-square&label=CI" alt="CI" /></a>
+  <a href="https://github.com/jlongo78/spaces/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/jlongo78/spaces/ci.yml?style=flat-square&label=CI" alt="CI" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue?style=flat-square" alt="Apache-2.0 License" /></a>
   <img src="https://img.shields.io/badge/node-%3E%3D20.9-brightgreen?style=flat-square" alt="Node 20.9+" />
   <img src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey?style=flat-square" alt="Platforms" />
@@ -301,7 +301,7 @@ how to report a vulnerability.
 ## Development
 
 ```bash
-git clone https://github.com/jlongo78/agent-spaces.git
+git clone https://github.com/jlongo78/spaces.git
 cd agent-spaces
 npm ci
 npm run build          # production build of the web app

@@ -7,7 +7,7 @@
   "homepage": "https://www.agentspaces.co",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/jlongo78/agent-spaces.git",
+    "url": "git+https://github.com/jlongo78/spaces.git",
     "directory": "npm/agent-spaces-tui-darwin-arm64"
   },
   "os": [

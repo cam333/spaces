@@ -2,12 +2,13 @@
   <img src="public/spaces_logo.png" alt="Spaces" width="420" />
 </p>
 
-<h3 align="center">Run your AI coding agents in persistent workspaces,<br/>and reach the same live sessions from your terminal, your browser, or another machine.</h3>
+<h3 align="center">A terminal workspace for your coding agents.<br/>Run them side by side, see which one needs you, and pick up where you left off, in your terminal or your browser.</h3>
 
 <p align="center">
   <a href="#install">Install</a> &middot;
   <a href="#quick-start">Quick start</a> &middot;
   <a href="#the-terminal-client">Terminal client</a> &middot;
+  <a href="#the-web-app">Web app</a> &middot;
   <a href="#security">Security</a> &middot;
   <a href="docs/getting-started.md">Docs</a>
 </p>
@@ -21,8 +22,10 @@
 </p>
 
 <p align="center">
-  <img src="public/demo.gif" alt="Spaces demo" width="800" />
+  <img src="docs/images/terminal-client.gif" alt="The Spaces terminal client: Claude Code and Codex working in two spaces, split side by side; Codex stops to ask for approval, gets it from the menu, then the Files tab, a detach and a reattach" width="900" />
 </p>
+
+<p align="center"><sub>Recorded live: Claude Code and Codex working on a small app in two spaces. Nothing is staged except the prompts.</sub></p>
 
 ---
 
@@ -32,19 +35,23 @@ Running one AI coding agent is easy. Running five is a mess of terminal tabs,
 and the moment you look away you lose track of which one finished, which one
 is waiting on you, and which one is still working.
 
-**Spaces** is a small server that runs on your machine and keeps your agents
-in named, persistent workspaces ("spaces"). Every pane is a real terminal
-that keeps running whether or not anything is looking at it. Spaces watches
-each agent, tells you which one needs you, and lets you reach the same live
-sessions from:
+**Spaces** is a small server on your machine that keeps your agents in
+named, persistent workspaces ("spaces"). Every pane is a real terminal that
+keeps running whether or not anything is looking at it. Spaces watches each
+agent and tells you which one is working (`◐`), done (`✓`) or blocked
+waiting for you (`×`).
 
-- a **terminal client** (`spaces`): sidebar, tabs, a file browser, works over SSH;
-- a **web app** in your browser (`spaces open`);
-- **another machine**: `spaces --remote you@devbox` drives Spaces on a server
-  from your laptop's terminal, over your existing SSH setup.
+You reach the same live agents two ways:
 
-Start an agent at your desk, detach, reattach from somewhere else: it is the
-same session the whole time.
+- **The terminal client**, `spaces`: a sidebar of spaces and agents, tabs,
+  a split view, a file browser and editor. It runs anywhere you have a
+  terminal, including over SSH, and `spaces --remote you@devbox` drives
+  Spaces on another machine from your laptop.
+- **The web app**, `spaces open`: the same spaces as a grid of browser
+  terminals, plus session history, search and usage dashboards.
+
+Start an agent in the terminal, check on it from the browser, detach, and
+reattach from somewhere else: it is the same session the whole time.
 
 ## Install
 
@@ -169,8 +176,14 @@ More in [tui/README.md](tui/README.md).
 
 ## The web app
 
-`spaces open` shows the same spaces and panes as a browser terminal grid,
-plus things that suit a bigger screen:
+<p align="center">
+  <img src="docs/images/web-app.png" alt="The Spaces web app showing the todo-api space: the Claude Code pane has finished and the Codex pane is still working" width="900" />
+</p>
+
+`spaces open` signs your browser in and shows the same spaces and panes as
+a grid of browser terminals: the very same agents, not copies, so you can
+start something in the terminal client and finish it here, or the other way
+round. On top of that it has things that suit a bigger screen:
 
 - **Session browser.** Past Claude Code, Codex, Gemini CLI and Aider sessions,
   indexed locally with full-text search; jump back into any of them.
@@ -302,7 +315,7 @@ how to report a vulnerability.
 
 ```bash
 git clone https://github.com/jlongo78/spaces.git
-cd agent-spaces
+cd spaces
 npm ci
 npm run build          # production build of the web app
 npm start              # run it (npm run dev runs the dev server instead)

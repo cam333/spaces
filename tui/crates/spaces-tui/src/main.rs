@@ -1939,6 +1939,25 @@ async fn run(args: Args) -> Result<(), String> {
     redraw_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut dirty = true;
 
+    // Open on an agent, not an empty space: a server that already has live
+    // panes gets the first of them focused, in its own space.
+    if model.focused.is_none() {
+        if let Some((id, space)) = model.opening_pane() {
+            model.selected_space = Some(space);
+            let pane_area = current_pane_area(&terminal, &model);
+            let mut ctx = PaneCtx {
+                base_url: &args.url,
+                token: args.token.as_deref(),
+                model: &mut model,
+                conn: &mut conn,
+                reattach: &mut reattach,
+                terms: &mut terms,
+                pane_area,
+            };
+            focus_pane(&id, &mut ctx).await;
+        }
+    }
+
     loop {
         tokio::select! {
             // ---- Terminal input ----

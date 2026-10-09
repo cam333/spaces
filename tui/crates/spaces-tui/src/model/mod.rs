@@ -1353,6 +1353,17 @@ impl Model {
             .collect()
     }
 
+    /// The pane a freshly attached client opens on: the first live pane
+    /// that belongs to a known space, with that space. `None` when no space
+    /// has a live pane, and the client opens on the space list as before.
+    pub fn opening_pane(&self) -> Option<(String, String)> {
+        self.local_workspaces().iter().find_map(|w| {
+            self.live_panes_in(&w.id)
+                .first()
+                .map(|p| (p.id.clone(), w.id.clone()))
+        })
+    }
+
     /// The active space's Files tab and how it is shown, while it is.
     pub fn shown_files(&self) -> Option<(&str, crate::files::FilesLayout)> {
         let layout = self.files_shown?;
@@ -2157,6 +2168,28 @@ mod tests {
             live: true,
             color: None,
         }
+    }
+
+    #[test]
+    fn a_new_client_opens_on_the_first_space_with_a_live_pane() {
+        let ws = |id: &str| spaces_proto::WorkspaceInfo {
+            git: None,
+            id: id.into(),
+            name: id.into(),
+            color: None,
+            pane_ids: vec![],
+        };
+        let mut m = Model::default();
+        assert_eq!(m.opening_pane(), None);
+        m.local_mut().workspaces = vec![ws("empty"), ws("w2"), ws("w3")];
+        let mut stopped = pane("p1", "w2", AgentState::Idle, true);
+        stopped.live = false;
+        m.local_mut().panes = vec![
+            stopped,
+            pane("p2", "w3", AgentState::Idle, true),
+            pane("p3", "w2", AgentState::Idle, true),
+        ];
+        assert_eq!(m.opening_pane(), Some(("p3".into(), "w2".into())));
     }
 
     #[test]

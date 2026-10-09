@@ -720,6 +720,36 @@ function handleCollabToggle(paneId, session) {
 }
 
 // ─── Shared connection handler ──────────────────────────
+/**
+ * Shows a runtime pane in the browser: its current screen, then its output
+ * as it comes, with keys and resizes going back to the same PTY. Speaks the
+ * browser's own message format, so the page cannot tell it from a pane it
+ * spawned. Takes no controller slot: the terminal client and the browser
+ * type into one pane side by side, as two browser tabs always could.
+ */
+function attachRuntimePane(ws, paneId, screen, cols, rows) {
+  const runtime = getRuntime();
+  const send = (msg) => { if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(msg)); };
+  console.log(`[WS] Attach runtime pane=${paneId.slice(0, 8)}`);
+  const fits = (c, r) => Number.isInteger(c) && Number.isInteger(r) && c > 0 && r > 0;
+  if (fits(cols, rows)) runtime.resizePane(paneId, cols, rows);
+  send({ type: 'data', data: screen.replayAnsi() });
+  const unsubscribe = runtime.subscribePaneData(
+    paneId,
+    (chunk) => send({ type: 'data', data: chunk }),
+    (exitCode) => { send({ type: 'exit', exitCode }); ws.close(); },
+  );
+  send({ type: 'ready', paneId, reattached: true });
+  ws.on('message', (raw) => {
+    let msg;
+    try { msg = JSON.parse(raw.toString()); } catch { runtime.writePane(paneId, raw.toString()); return; }
+    if (msg.type === 'data' && typeof msg.data === 'string') runtime.writePane(paneId, msg.data);
+    else if (msg.type === 'resize' && fits(msg.cols, msg.rows)) runtime.resizePane(paneId, msg.cols, msg.rows);
+  });
+  ws.on('close', unsubscribe);
+  ws.on('error', (err) => console.log(`[WS] Error pane=${paneId.slice(0, 8)} err=${err.message}`));
+}
+
 function handleConnection(wss, ws, req) {
   ws.isAlive = true;
   ws.on('pong', () => { ws.isAlive = true; });
@@ -913,6 +943,16 @@ function handleConnection(wss, ws, req) {
       console.log(`[WS] Error pane=${paneId.slice(0,8)} err=${err.message}`);
     });
 
+    return;
+  }
+
+  // A live pane this socket did not spawn — started from the terminal
+  // client, or by an agent over /proto — is attached to, never spawned
+  // again: a second PTY under the same id would run a second agent in the
+  // same folder. Desktop mode only; multiuser panes all come through here.
+  const runtimeScreen = IS_MULTIUSER ? null : getRuntime().getScreen(paneId);
+  if (runtimeScreen) {
+    attachRuntimePane(ws, paneId, runtimeScreen, cols, rows);
     return;
   }
 

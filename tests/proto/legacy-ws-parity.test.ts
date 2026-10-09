@@ -105,4 +105,36 @@ describe('legacy /ws contract', () => {
     await waitFor(() => second.frames.some(f => f.type === 'data' && String(f.data).includes(marker)));
     second.ws.close();
   }, 25000);
+  it('attaches to a pane the terminal client started instead of spawning a second one', async () => {
+    const { getRuntime } = require('../../bin/terminal-server.js');
+    const { spawnPane, buildPaneEnv } = require('../../bin/lib/runtime/spawn-pane.js');
+    const runtime = getRuntime();
+    const paneId = `parity-runtime-${Date.now()}`;
+    const spawned = spawnPane({
+      paneId, cwd: process.cwd(), agentType: 'shell', cols: 80, rows: 24,
+      env: buildPaneEnv({ paneId, apiPort: port }), runtime,
+    });
+    expect(spawned.ok).toBe(true);
+    const before = `BEFORE_${Date.now()}`;
+    runtime.writePane(paneId, `echo ${before}\r`);
+    await waitFor(() => runtime.getScreen(paneId).replayAnsi().includes(before));
+
+    const c = connect(`paneId=${paneId}&cwd=${encodeURIComponent(process.cwd())}&agentType=shell&cols=100&rows=30`);
+    await c.open;
+    await waitFor(() => c.frames.some(f => f.type === 'ready'));
+    expect(c.frames.find(f => f.type === 'ready')).toMatchObject({ paneId, reattached: true });
+    // The screen it already had, then the same shell answering the browser.
+    expect(c.frames.some(f => f.type === 'data' && String(f.data).includes(before))).toBe(true);
+    // The same process, not a second one: a shell reports its own pid.
+    const ask = process.platform === 'win32' ? `echo AFTER_${before}` : 'echo PID=$$';
+    c.ws.send(JSON.stringify({ type: 'data', data: `${ask}\r` }));
+    const answer = process.platform === 'win32' ? new RegExp(`AFTER_${before}`) : /PID=(\d+)/;
+    await waitFor(() => answer.test(c.frames.map(f => String(f.data ?? '')).join('')));
+    if (process.platform !== 'win32') {
+      const pid = c.frames.map(f => String(f.data ?? '')).join('').match(/PID=(\d+)/)![1];
+      expect(Number(pid)).toBe(spawned.term.pid);
+    }
+    c.ws.close();
+    spawned.term.kill();
+  }, 25000);
 });

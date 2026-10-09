@@ -1688,8 +1688,10 @@ function ensureRemoteInstall(dest) {
   const remote = require('./lib/remote');
   const { spawnSync } = require('child_process');
   const local = require('../package.json').version;
+  // No stdin: neither command reads it, and a session holding the terminal
+  // open can outlive its command. ssh asks for passwords on /dev/tty anyway.
   const probe = spawnSync('ssh', remote.sshProbeArgs(dest), {
-    stdio: ['inherit', 'pipe', 'pipe'], encoding: 'utf-8',
+    stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf-8',
   });
   if (probe.error || probe.status === 255) return;
   const plan = remote.planRemote(remote.parseProbe(probe.stdout), local);
@@ -1706,7 +1708,7 @@ function ensureRemoteInstall(dest) {
   const install = ({ restart }) => {
     console.log(`  Installing ${spec} on ${dest}. Compiling the terminal library can take a minute...`);
     const r = spawnSync('ssh', remote.sshInstallArgs(dest, spec, { restart }), {
-      stdio: ['inherit', 'pipe', 'pipe'], encoding: 'utf-8',
+      stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf-8',
     });
     if (r.status === 0) {
       console.log(`  Spaces ${local} is installed on ${dest}.`);

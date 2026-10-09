@@ -1216,11 +1216,39 @@ function startServer() {
 
   let nextReady = false;
 
+  // The spaces database is created by the web app on its first request. A
+  // fresh install used from the terminal client alone never made one, so
+  // creating a first space failed with "session database unavailable".
+  // One request as the owner, as soon as the app is up, creates it.
+  function createDatabaseNow(attempt = 1) {
+    const headers = { Host: `localhost:${NEXT_INTERNAL_PORT}` };
+    if (isMultiuser) {
+      headers['x-spaces-internal'] = internalToken;
+    } else {
+      headers.Authorization = `Bearer ${desktopAuth.signDesktop(internalToken, 'api', desktopAuth.API_TTL_S)}`;
+    }
+    const req = http.get({
+      host: '127.0.0.1',
+      port: NEXT_INTERNAL_PORT,
+      path: `${basePath || ''}/api/workspaces/`,
+      headers,
+      timeout: 30000,
+    }, (res) => {
+      res.resume();
+      if (res.statusCode !== 200 && attempt < 5) setTimeout(() => createDatabaseNow(attempt + 1), 1000 * attempt);
+    });
+    req.on('timeout', () => req.destroy());
+    req.on('error', () => {
+      if (attempt < 5) setTimeout(() => createDatabaseNow(attempt + 1), 1000 * attempt);
+    });
+  }
+
   next.stdout.on('data', (data) => {
     const msg = data.toString();
     process.stdout.write(msg);
     if (!nextReady && (msg.includes('Ready') || msg.includes('started server') || msg.includes('Listening') || msg.includes('localhost'))) {
       nextReady = true;
+      createDatabaseNow();
       console.log(`\n  Ready at http://localhost:${PORT}`);
       if (tlsCreds) console.log(`  Also at  https://localhost:${PORT}  (self-signed)`);
       console.log('');

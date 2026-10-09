@@ -1208,6 +1208,7 @@ fn close_palette(palette: &mut Palette) {
     palette.picking_color = None;
     palette.renaming_pane = None;
     palette.picking_pane_color = None;
+    palette.picking_session = None;
     // The overlays are mutually exclusive: whichever one the user is opening
     // or closing, the others must not be left behind on screen.
     palette.tab_menu = None;
@@ -1962,6 +1963,36 @@ mod tests {
         );
         assert!(p.open);
         assert!(!p.naming_space);
+    }
+
+    #[test]
+    fn leaving_the_session_picker_any_way_brings_back_the_ordinary_menu() {
+        // The regression this guards: the resume-or-new picker outlived
+        // itself, so every later `ctrl+k` opened it again instead of the menu.
+        let m = one_pane_model("p1");
+        for leave in [
+            key(KeyCode::Esc, KeyModifiers::NONE),
+            key(KeyCode::Enter, KeyModifiers::NONE),
+            key(KeyCode::Char('k'), KeyModifiers::CONTROL),
+        ] {
+            let mut p = Palette {
+                open: true,
+                picking_session: Some(crate::ui::palette::PendingPane {
+                    workspace_id: "w1".into(),
+                    agent_type: "claude".into(),
+                    cwd: Some("/work/api".into()),
+                    sessions: vec![],
+                }),
+                ..Palette::default()
+            };
+            route(leave, &mut p, Some("p1"), &m);
+            assert!(!p.open, "{leave:?}");
+            assert!(p.picking_session.is_none(), "{leave:?}: the picker outlived itself");
+
+            route(key(KeyCode::Char('k'), KeyModifiers::CONTROL), &mut p, Some("p1"), &m);
+            assert!(p.open);
+            assert!(p.picking_session.is_none(), "{leave:?}: ctrl+k reopened the picker");
+        }
     }
 
     #[test]

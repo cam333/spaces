@@ -42,3 +42,6 @@ updates:
     ignore:
       - dependency-name: '*'
         update-types: [version-update:semver-major]
+      # Its tag is the Rust version, kept equal to tui/rust-toolchain.toml;
+      # the two move together, by hand.
+      - dependency-name: dtolnay/rust-toolchain

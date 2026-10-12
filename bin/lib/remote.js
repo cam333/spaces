@@ -220,9 +220,13 @@ function installFailureHint(kind, dest, spec) {
   }
 }
 
-/** `ssh` arguments for the tunnel: local port → the remote server's loopback. */
+/**
+ * `ssh` arguments for the tunnel: local port → the remote server's loopback.
+ * `-v` so its log says when the forward is up (see tunnelReady).
+ */
 function sshTunnelArgs(dest, localPort, remotePort) {
   return [
+    '-v',
     '-N',
     '-o', 'ExitOnForwardFailure=yes',
     '-o', 'ServerAliveInterval=30',
@@ -230,6 +234,27 @@ function sshTunnelArgs(dest, localPort, remotePort) {
     '-L', `127.0.0.1:${localPort}:127.0.0.1:${remotePort}`,
     '--', dest,
   ];
+}
+
+/**
+ * Whether the tunnel's `ssh -v` log says the forward from `localPort` is
+ * listening. Waiting on the log rather than probing the port: a probe is a
+ * child process, and on Windows each one that exits resets the console,
+ * which garbles a password being typed into ssh's prompt meanwhile.
+ */
+function tunnelReady(log, localPort) {
+  const port = String(localPort).replace(/\D/g, '');
+  return new RegExp(`Local forwarding listening on 127\\.0\\.0\\.1 port ${port}\\b|Local connections to 127\\.0\\.0\\.1:${port} forwarded`).test(String(log));
+}
+
+/** Whether the tunnel's log shows ssh got past authentication. */
+function tunnelAuthenticated(log) {
+  return /^Authenticated to /m.test(String(log));
+}
+
+/** An `ssh -v` log without its debug chatter, for showing a failure. */
+function withoutDebug(log) {
+  return String(log).split(/\r?\n/).filter((l) => !/^(debug\d:|OpenSSH_)/.test(l)).join('\n');
 }
 
 /** The port `spaces start` reported, or null. */
@@ -299,6 +324,9 @@ module.exports = {
   splitRemote,
   PACKAGE,
   inLoginShell,
+  tunnelReady,
+  tunnelAuthenticated,
+  withoutDebug,
   sshProbeArgs,
   parseProbe,
   nodeIsSupported,

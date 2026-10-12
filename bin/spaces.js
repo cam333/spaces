@@ -845,17 +845,30 @@ function launchRemote(dest, tuiArgs) {
   });
   fs.closeSync(log);
   const closeTunnel = () => { try { tunnel.kill(); } catch { /* already gone */ } };
-  const outcome = waitForServer({
-    timeoutMs: 30000,
-    probe: () => portIsListening(localPort, 1000),
-    alive: () => { try { process.kill(tunnel.pid, 0); return true; } catch (e) { return e.code === 'EPERM'; } },
-  });
-  if (outcome !== 'up') {
+  // Waits on ssh's own log, starting no process meanwhile: on Windows each
+  // process that exits resets the shared console, and that garbles a
+  // password being typed into the tunnel's prompt. Minutes to type one;
+  // thirty seconds for the forward once signed in.
+  const readLog = () => { try { return fs.readFileSync(logPath, 'utf-8'); } catch { return ''; } };
+  const tunnelAlive = () => { try { process.kill(tunnel.pid, 0); return true; } catch (e) { return e.code === 'EPERM'; } };
+  const nap = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+  let deadline = Date.now() + 5 * 60 * 1000;
+  let signedIn = false;
+  let up = false;
+  for (;;) {
+    const text = readLog();
+    if (remote.tunnelReady(text, localPort)) { up = true; break; }
+    if (!signedIn && remote.tunnelAuthenticated(text)) {
+      signedIn = true;
+      deadline = Math.min(deadline, Date.now() + 30000);
+    }
+    if (!tunnelAlive() || Date.now() > deadline) break;
+    nap(100);
+  }
+  if (!up) {
     closeTunnel();
     console.error(`  Could not open the SSH tunnel to ${dest}:`);
-    let output = '';
-    try { output = fs.readFileSync(logPath, 'utf-8'); } catch { /* nothing logged */ }
-    relay(output);
+    relay(remote.withoutDebug(readLog()));
     process.exit(1);
   }
 

@@ -10,6 +10,9 @@ import {
   classifyInstallFailure,
   installFailureHint,
   PACKAGE,
+  tunnelReady,
+  tunnelAuthenticated,
+  withoutDebug,
 } from '../../bin/lib/remote.js';
 
 describe('inLoginShell', () => {
@@ -224,5 +227,31 @@ describe.skipIf(process.platform === 'win32')('the probe, run by a real shell', 
     expect(r.stderr).toBe('');
     expect(fs.existsSync(path.join(dir, '.local', 'bin', 'spaces'))).toBe(true);
     expect(r.stdout).toContain('SPACES_PORT=3457');
+  });
+});
+
+describe('waiting for the tunnel', () => {
+  const log = [
+    'OpenSSH_for_Windows_9.5p2, LibreSSL 3.8.2',
+    'debug1: Next authentication method: password',
+    'Authenticated to devbox ([10.0.0.5]:22) using "password".',
+    'debug1: Local connections to 127.0.0.1:40001 forwarded to remote address 127.0.0.1:3457',
+  ].join('\r\n');
+
+  it('knows the forward is up from the log, for its own port only', () => {
+    expect(tunnelReady(log, 40001)).toBe(true);
+    expect(tunnelReady(log, 4000)).toBe(false);
+    expect(tunnelReady('debug1: Local forwarding listening on 127.0.0.1 port 40001.', 40001)).toBe(true);
+    expect(tunnelReady('Authenticated to devbox', 40001)).toBe(false);
+  });
+
+  it('knows when ssh is past the password', () => {
+    expect(tunnelAuthenticated(log)).toBe(true);
+    expect(tunnelAuthenticated('debug1: Next authentication method: password')).toBe(false);
+  });
+
+  it('shows a failure without the debug chatter', () => {
+    expect(withoutDebug(`${log}\r\nbind [127.0.0.1]:40001: Address already in use`))
+      .toBe('Authenticated to devbox ([10.0.0.5]:22) using "password".\nbind [127.0.0.1]:40001: Address already in use');
   });
 });

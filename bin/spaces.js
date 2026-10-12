@@ -786,13 +786,16 @@ function launchRemote(dest, tuiArgs) {
   // 1. Make sure Spaces is running over there, and learn its port —
   // installing or updating it first, with the user's say-so.
   console.log(`  Connecting to ${dest}...`);
-  ensureRemoteInstall(dest);
+  const prepared = ensureRemoteInstall(dest);
   const runStart = (loginShell) => spawnSync('ssh', remote.sshStartArgs(dest, { loginShell }), {
     // No stdin, as for the probe in ensureRemoteInstall: nothing reads it.
     stdio: ['ignore', 'pipe', 'pipe'],
     encoding: 'utf-8',
   });
-  let r = runStart(false);
+  // An install already started it. Otherwise start it, through the login
+  // shell first when the probe showed the remote has one: one SSH session
+  // rather than two, and each can mean another password prompt.
+  let r = prepared.started || runStart(prepared.shell);
   if (r.error) {
     console.error(r.error.code === 'ENOENT'
       ? '  --remote needs the ssh client, and none was found on the PATH.'
@@ -800,8 +803,8 @@ function launchRemote(dest, tuiArgs) {
     process.exit(1);
   }
   let remotePort = r.status === 0 ? remote.parseStartOutput(r.stdout) : null;
-  if (remotePort === null && remote.classifyStartFailure(r.status, r.stderr) === 'missing') {
-    r = runStart(true);
+  if (remotePort === null && !prepared.started && remote.classifyStartFailure(r.status, r.stderr) === 'missing') {
+    r = runStart(!prepared.shell);
     remotePort = r.status === 0 ? remote.parseStartOutput(r.stdout) : null;
   }
   const relay = (text) => {
@@ -1684,6 +1687,10 @@ async function printStatus(porcelain) {
  * `--yes`, and saying how many agents an update would stop. A remote that
  * cannot be asked (an ssh failure, a shell that is not sh-like) is left to
  * the connection step, which reports it as it always has.
+ *
+ * Returns `shell` (the remote answered through an sh-like login shell) and
+ * `started` (the install's ssh result, which already started the server),
+ * so the connection step does not open sessions it needs no longer.
  */
 function ensureRemoteInstall(dest) {
   const remote = require('./lib/remote');
@@ -1694,8 +1701,10 @@ function ensureRemoteInstall(dest) {
   const probe = spawnSync('ssh', remote.sshProbeArgs(dest), {
     stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf-8',
   });
-  if (probe.error || probe.status === 255) return;
-  const plan = remote.planRemote(remote.parseProbe(probe.stdout), local);
+  if (probe.error || probe.status === 255) return { shell: false, started: null };
+  const probed = remote.parseProbe(probe.stdout);
+  const plan = remote.planRemote(probed, local);
+  const done = { shell: probed !== null, started: null };
   // isatty, not process.stdin.isTTY: touching process.stdin hands the
   // terminal to Node's own reader, and the question below would never be
   // answered (see lib/prompt.js).
@@ -1716,7 +1725,7 @@ function ensureRemoteInstall(dest) {
     });
     if (r.status === 0) {
       console.log(`  Spaces ${local} is installed on ${dest}.`);
-      return;
+      return r;
     }
     const output = `${r.stdout || ''}\n${r.stderr || ''}`;
     for (const line of require('./spaces-tui').tailLines(output, 8)) console.error(`    ${line.trim()}`);
@@ -1726,11 +1735,11 @@ function ensureRemoteInstall(dest) {
 
   switch (plan.action) {
     case 'connect':
-      return;
+      return done;
     case 'newer':
       console.log(`  Spaces on ${dest} is ${plan.remote}, newer than this machine's ${local}.`);
       console.log(`  To update this machine: npm install -g ${remote.PACKAGE}`);
-      return;
+      return done;
     case 'no-node':
       console.error(`  Spaces is not installed on ${dest}, and neither is Node.js, which it needs (20.9 or newer).`);
       console.error('  Install Node.js there first; nvm is the easiest way: https://github.com/nvm-sh/nvm');
@@ -1752,20 +1761,19 @@ function ensureRemoteInstall(dest) {
           process.exit(1);
         }
       }
-      install({ restart: false });
-      return;
+      return { ...done, started: install({ restart: false }) };
     }
     case 'update': {
       const stops = plan.running === false ? 0 : plan.liveAgents;
       if (!cliFlags.yes) {
         if (!interactive) {
           console.log(`  Spaces on ${dest} is ${plan.from}, older than this machine's ${local}; run with --yes to update it.`);
-          return;
+          return done;
         }
         if (stops === 0) {
           const restarting = plan.running ? ' It restarts Spaces there; no agents are running.' : '';
           if (ask(`  Spaces on ${dest} is ${plan.from}, older than this machine's ${local}. Update it?${restarting} [Y/n] `, ['y', 'n'], 'y') !== 'y') {
-            return;
+            return done;
           }
         } else {
           console.log(`  Spaces on ${dest} is ${plan.from}, older than this machine's ${local}.`);
@@ -1774,14 +1782,13 @@ function ensureRemoteInstall(dest) {
             : `  Updating restarts Spaces on ${dest} and stops its ${stops} running ${stops === 1 ? 'agent' : 'agents'}.`);
           const choice = ask(`  [u]pdate now, [c]onnect to ${plan.from} as it is, or [q]uit? [u/c/q] `, ['u', 'c', 'q'], null);
           if (choice === 'q') process.exit(0);
-          if (choice !== 'u') return;
+          if (choice !== 'u') return done;
         }
       }
-      install({ restart: plan.running !== false });
-      return;
+      return { ...done, started: install({ restart: plan.running !== false }) };
     }
     default:
-      return;
+      return done;
   }
 }
 

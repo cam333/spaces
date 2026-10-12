@@ -13,9 +13,9 @@ import {
 } from '../../bin/lib/remote.js';
 
 describe('inLoginShell', () => {
-  it('runs the command after loading nvm, inside single quotes', () => {
+  it('runs the command after loading nvm, with ~/.local/bin first, inside single quotes', () => {
     expect(inLoginShell('spaces status')).toBe(
-      `"\${SHELL:-sh}" -lc '[ -s "$HOME/.nvm/nvm.sh" ] && . "$HOME/.nvm/nvm.sh" >/dev/null 2>&1; spaces status'`,
+      `"\${SHELL:-sh}" -lc '[ -s "$HOME/.nvm/nvm.sh" ] && . "$HOME/.nvm/nvm.sh" >/dev/null 2>&1; PATH="$HOME/.local/bin:$PATH"; spaces status'`,
     );
   });
 
@@ -130,13 +130,18 @@ describe('installSpec', () => {
 });
 
 describe('sshInstallArgs', () => {
-  it('installs in the login shell, and restarts only for an update of a running server', () => {
-    const fresh = sshInstallArgs('you@devbox', `${PACKAGE}@1.0.0`).at(-1);
-    expect(fresh).toContain(`npm install -g ${PACKAGE}@1.0.0'`);
+  const spec = `${PACKAGE}@1.0.0`;
+
+  it('installs globally when it may, else into ~/.local, then starts the server in the same session', () => {
+    const fresh = sshInstallArgs('you@devbox', spec).at(-1)!;
+    expect(fresh).toContain(`if [ -w "$(npm prefix -g)/lib" ]; then npm install -g ${spec}; else npm install -g --prefix "$HOME/.local" ${spec}; fi && spaces start --print-token'`);
     expect(fresh).not.toContain('spaces restart');
-    const update = sshInstallArgs('you@devbox', `${PACKAGE}@1.0.0`, { restart: true }).at(-1);
-    expect(update).toContain(`npm install -g ${PACKAGE}@1.0.0 && spaces restart'`);
     expect(sshInstallArgs('you@devbox', 'x').slice(-3, -1)).toEqual(['--', 'you@devbox']);
+  });
+
+  it('restarts first for an update of a running server', () => {
+    expect(sshInstallArgs('you@devbox', spec, { restart: true }).at(-1))
+      .toContain('fi && spaces restart && spaces start --print-token\'');
   });
 });
 
@@ -196,5 +201,28 @@ describe.skipIf(process.platform === 'win32')('the probe, run by a real shell', 
 
   it('reports a machine without Spaces', () => {
     expect(probe(machine({ spaces: null }))).toMatchObject({ node: '22.1.0', missing: true, version: null });
+  });
+
+  it('installs into ~/.local when npm\'s global folder is not writable, and then finds it there', () => {
+    const dir = machine({ spaces: null });
+    const prefix = path.join(dir, 'root-owned');
+    fs.mkdirSync(path.join(prefix, 'lib'), { recursive: true });
+    fs.chmodSync(path.join(prefix, 'lib'), 0o555);
+    // A stand-in npm: reports the read-only prefix, and "installs" a spaces
+    // into whatever --prefix it is given (or the global one).
+    fs.writeFileSync(path.join(dir, 'npm'), [
+      '#!/bin/sh',
+      `[ "$1" = prefix ] && { echo ${prefix}; exit 0; }`,
+      `p=${prefix}; [ "$3" = --prefix ] && p=$4`,
+      'mkdir -p "$p/bin" && printf "#!/bin/sh\\necho SPACES_PORT=3457\\n" > "$p/bin/spaces" && chmod +x "$p/bin/spaces"',
+    ].join('\n') + '\n', { mode: 0o755 });
+    const r = spawnSync('/bin/sh', ['-c', sshInstallArgs('h', spec).at(-1)!], {
+      encoding: 'utf-8',
+      env: { PATH: `${dir}:/usr/bin:/bin`, HOME: dir, SHELL: path.join(dir, 'login-shell') },
+    });
+    if (process.getuid && process.getuid() === 0) return; // root may write anywhere
+    expect(r.stderr).toBe('');
+    expect(fs.existsSync(path.join(dir, '.local', 'bin', 'spaces'))).toBe(true);
+    expect(r.stdout).toContain('SPACES_PORT=3457');
   });
 });

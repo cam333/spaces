@@ -52,13 +52,15 @@ function validateDestination(dest) {
  */
 /**
  * `command` run through the remote user's login shell with nvm loaded — the
- * PATH an interactive session would have. `command` is spliced inside single
- * quotes, so it must never contain one; every caller passes a constant or
- * something built only from validated parts.
+ * PATH an interactive session would have — and ~/.local/bin first on it,
+ * where `--remote` installs Spaces when npm's own global folder belongs to
+ * root. `command` is spliced inside single quotes, so it must never contain
+ * one; every caller passes a constant or something built only from
+ * validated parts.
  */
 function inLoginShell(command) {
   if (command.includes("'")) throw new Error('a remote command cannot contain a single quote');
-  return `"\${SHELL:-sh}" -lc '[ -s "$HOME/.nvm/nvm.sh" ] && . "$HOME/.nvm/nvm.sh" >/dev/null 2>&1; ${command}'`;
+  return `"\${SHELL:-sh}" -lc '[ -s "$HOME/.nvm/nvm.sh" ] && . "$HOME/.nvm/nvm.sh" >/dev/null 2>&1; PATH="$HOME/.local/bin:$PATH"; ${command}'`;
 }
 
 function sshStartArgs(dest, { loginShell = false } = {}) {
@@ -165,12 +167,21 @@ function installSpec(localVersion, override) {
 }
 
 /**
- * Installs `spec` on the remote; for an update, `spaces restart` then puts
- * the new version in charge — the freshly installed one, which knows to go
- * through the service when there is one.
+ * Installs `spec` on the remote and starts it, in one SSH session — each
+ * session can mean another password prompt. Into npm's global folder when
+ * this account can write there (nvm's always can), else into ~/.local,
+ * which needs no root. For an update, `spaces restart` first puts the new
+ * version in charge: the freshly installed one, which knows to go through
+ * the service when there is one. Ends with what `spaces start
+ * --print-token` prints, so the caller need not ask again.
  */
 function sshInstallArgs(dest, spec, { restart = false } = {}) {
-  const command = `npm install -g ${spec}${restart ? ' && spaces restart' : ''}`;
+  const command = [
+    `if [ -w "$(npm prefix -g)/lib" ]; then npm install -g ${spec};`,
+    `else npm install -g --prefix "$HOME/.local" ${spec}; fi`,
+    restart ? '&& spaces restart' : '',
+    '&& spaces start --print-token',
+  ].filter(Boolean).join(' ');
   return ['-o', 'ConnectTimeout=15', '--', dest, inLoginShell(command)];
 }
 

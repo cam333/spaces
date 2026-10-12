@@ -48,7 +48,7 @@ describe('ssh arguments', () => {
   it('retries through a login shell that also loads nvm, with a constant command', () => {
     const retry = sshStartArgs('h', { loginShell: true }).at(-1);
     expect(retry).toBe(
-      `"\${SHELL:-sh}" -lc '[ -s "$HOME/.nvm/nvm.sh" ] && . "$HOME/.nvm/nvm.sh" >/dev/null 2>&1; spaces start --print-token'`,
+      `"\${SHELL:-sh}" -lc '[ -s "$HOME/.nvm/nvm.sh" ] && . "$HOME/.nvm/nvm.sh" >/dev/null 2>&1; PATH="$HOME/.local/bin:$PATH"; spaces start --print-token'`,
     );
   });
 });

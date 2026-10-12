@@ -121,6 +121,12 @@ remote server, which stops the agents running in it, so it says how many
 would stop and lets you update, connect to the old version as it is, or
 quit. `--yes` answers yes to all of it, for scripts.
 
+If the other machine asks for a password, `--remote` offers to set up an
+SSH key instead (each connection would otherwise ask again). It uses your
+default key, or creates `~/.ssh/id_ed25519`, adds it to
+`~/.ssh/authorized_keys` there with your password one last time, and checks
+it works. A "no" is remembered for that machine.
+
 Nothing new is exposed on `devbox`: its server stays on its own loopback,
 and the only way in is your SSH login. The terminal client receives a
 session token from `devbox`; the secret it is signed with never leaves

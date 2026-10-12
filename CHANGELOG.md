@@ -42,7 +42,8 @@ The first public open-source release, under the Apache License 2.0.
   machine, over SSH, starting Spaces there if needed. Nothing is exposed
   beyond your SSH login. It offers to install Spaces there, or to update an
   older install, saying first how many running agents an update would stop;
-  `--yes` skips the questions.
+  `--yes` skips the questions. When the machine asks for a password, it
+  offers to set up an SSH key instead.
 - `spaces status` and `spaces restart` (through the service when one is
   installed).
 - Live sync with the web app: changes on either side appear on the other

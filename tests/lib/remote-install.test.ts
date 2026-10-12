@@ -216,7 +216,7 @@ describe.skipIf(process.platform === 'win32')('the probe, run by a real shell', 
       `p=${prefix}; [ "$3" = --prefix ] && p=$4`,
       'mkdir -p "$p/bin" && printf "#!/bin/sh\\necho SPACES_PORT=3457\\n" > "$p/bin/spaces" && chmod +x "$p/bin/spaces"',
     ].join('\n') + '\n', { mode: 0o755 });
-    const r = spawnSync('/bin/sh', ['-c', sshInstallArgs('h', spec).at(-1)!], {
+    const r = spawnSync('/bin/sh', ['-c', sshInstallArgs('h', `${PACKAGE}@1.0.0`).at(-1)!], {
       encoding: 'utf-8',
       env: { PATH: `${dir}:/usr/bin:/bin`, HOME: dir, SHELL: path.join(dir, 'login-shell') },
     });

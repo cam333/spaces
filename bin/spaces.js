@@ -875,6 +875,12 @@ function connectRemote(dest, { login = false, localPort: wantedPort = null } = {
       process.exit(1);
     }
     const kind = remote.classifyStartFailure(r.status, r.stderr);
+    if (login && /Unknown option: --print-login/.test(`${r.stdout}\n${r.stderr}`)) {
+      console.error(`  Spaces on ${dest} is too old to sign a browser in; that needs 1.0.1 or newer there.`);
+      console.error(`  Update it there:  ssh ${dest} 'npm install -g @jlongo78/agent-spaces'`);
+      console.error('  (spaces --remote offers to, once this machine has a newer version than that one).');
+      process.exit(1);
+    }
     if (kind === 'missing') {
       console.error(remote.installHint(dest));
     } else if (kind === 'ssh') {

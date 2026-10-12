@@ -3,7 +3,7 @@
 All notable changes to Spaces are recorded here. The project follows
 [Semantic Versioning](https://semver.org/).
 
-## Unreleased
+## 1.0.1
 
 - `spaces open --remote you@host`: the web app for Spaces on another machine,
   through an SSH tunnel, with the browser signed in and kept apart from

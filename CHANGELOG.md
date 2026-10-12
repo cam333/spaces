@@ -3,6 +3,16 @@
 All notable changes to Spaces are recorded here. The project follows
 [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+- `spaces --remote` offers to set up SSH key sign-in when the other machine
+  asks for a password, which it would otherwise do for each of its three
+  connections.
+- `spaces --remote` installs into `~/.local` when npm's global folder needs
+  root, and opens fewer SSH sessions.
+- `spaces --remote` on Windows: a password typed for the tunnel is no longer
+  garbled, and each SSH step says what it is doing.
+
 ## 1.0.0
 
 The first public open-source release, under the Apache License 2.0.
@@ -42,8 +52,7 @@ The first public open-source release, under the Apache License 2.0.
   machine, over SSH, starting Spaces there if needed. Nothing is exposed
   beyond your SSH login. It offers to install Spaces there, or to update an
   older install, saying first how many running agents an update would stop;
-  `--yes` skips the questions. When the machine asks for a password, it
-  offers to set up an SSH key instead.
+  `--yes` skips the questions.
 - `spaces status` and `spaces restart` (through the service when one is
   installed).
 - Live sync with the web app: changes on either side appear on the other

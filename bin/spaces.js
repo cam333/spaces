@@ -795,6 +795,7 @@ function launchRemote(dest, tuiArgs) {
   // An install already started it. Otherwise start it, through the login
   // shell first when the probe showed the remote has one: one SSH session
   // rather than two, and each can mean another password prompt.
+  if (!prepared.started) console.log(`  Starting Spaces on ${dest}...`);
   let r = prepared.started || runStart(prepared.shell);
   if (r.error) {
     console.error(r.error.code === 'ENOENT'
@@ -840,6 +841,10 @@ function launchRemote(dest, tuiArgs) {
   fs.mkdirSync(SPACES_DIR, { recursive: true });
   const logPath = path.join(SPACES_DIR, 'remote-tunnel.log');
   const log = fs.openSync(logPath, 'w');
+  // Its own SSH session, which may ask for the password again: say so,
+  // or a third prompt arrives with no explanation after two that looked
+  // like the whole sign-in.
+  console.log(`  Opening an SSH tunnel to Spaces on ${dest}...`);
   const tunnel = spawn('ssh', remote.sshTunnelArgs(dest, localPort, remotePort), {
     stdio: ['ignore', log, log],
   });

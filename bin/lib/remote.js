@@ -63,9 +63,9 @@ function inLoginShell(command) {
   return `"\${SHELL:-sh}" -lc '[ -s "$HOME/.nvm/nvm.sh" ] && . "$HOME/.nvm/nvm.sh" >/dev/null 2>&1; PATH="$HOME/.local/bin:$PATH"; ${command}'`;
 }
 
-function sshStartArgs(dest, { loginShell = false } = {}) {
-  const command = loginShell ? inLoginShell('spaces start --print-token') : 'spaces start --print-token';
-  return ['-o', 'ConnectTimeout=15', '--', dest, command];
+function sshStartArgs(dest, { loginShell = false, login = false } = {}) {
+  const start = `spaces start --print-token${login ? ' --print-login' : ''}`;
+  return ['-o', 'ConnectTimeout=15', '--', dest, loginShell ? inLoginShell(start) : start];
 }
 
 // ─── Installing and updating the remote ────────────────────
@@ -215,12 +215,12 @@ function installSpec(localVersion, override) {
  * the service when there is one. Ends with what `spaces start
  * --print-token` prints, so the caller need not ask again.
  */
-function sshInstallArgs(dest, spec, { restart = false } = {}) {
+function sshInstallArgs(dest, spec, { restart = false, login = false } = {}) {
   const command = [
     `if [ -w "$(npm prefix -g)/lib" ]; then npm install -g ${spec};`,
     `else npm install -g --prefix "$HOME/.local" ${spec}; fi`,
     restart ? '&& spaces restart' : '',
-    '&& spaces start --print-token',
+    `&& spaces start --print-token${login ? ' --print-login' : ''}`,
   ].filter(Boolean).join(' ');
   return ['-o', 'ConnectTimeout=15', '--', dest, inLoginShell(command)];
 }
@@ -305,6 +305,29 @@ function parseStartOutput(stdout) {
   return port >= 1 && port <= 65535 ? port : null;
 }
 
+/** The browser sign-in code `spaces start --print-login` reported, or null. */
+function parseStartLogin(stdout) {
+  const m = /^SPACES_LOGIN=([A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)\s*$/m.exec(String(stdout));
+  return m ? m[1] : null;
+}
+
+/** The path the remote serves the web app under, or '' (also when malformed). */
+function parseStartBasePath(stdout) {
+  const m = /^SPACES_BASE_PATH=(\/[A-Za-z0-9._~\/-]*?)\/?\s*$/m.exec(String(stdout));
+  return m ? m[1] : '';
+}
+
+/**
+ * The local port `spaces open --remote` tunnels from, the same each time for
+ * the same destination, so the address stays put in the browser's history.
+ * Within 41000–41999; another is used when this one is taken.
+ */
+function preferredLocalPort(dest) {
+  let h = 0;
+  for (const c of String(dest)) h = (h * 31 + c.charCodeAt(0)) >>> 0;
+  return 41000 + (h % 1000);
+}
+
 /** The session token `spaces start --print-token` reported, or null. */
 function parseStartToken(stdout) {
   const m = TOKEN_LINE.exec(String(stdout));
@@ -359,6 +382,9 @@ module.exports = {
   sshTunnelArgs,
   parseStartOutput,
   parseStartToken,
+  parseStartLogin,
+  parseStartBasePath,
+  preferredLocalPort,
   classifyStartFailure,
   installHint,
   splitRemote,

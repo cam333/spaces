@@ -24,7 +24,7 @@ describe('findUnknownFlag', () => {
       ['tui', '--remote', 'me@host'],
       ['--remote', 'me@host', '--yes'], ['--remote', 'me@host', '-y'],
       ['status'], ['status', '--porcelain'], ['restart'],
-      ['start', '--print-token'],
+      ['start', '--print-token'], ['start', '--print-token', '--print-login'], ['open', '--remote', 'me@host'],
       ['start', '--multiuser', '--experimental'],
       ['stop', '--port', '4000'],
       ['open'], ['signout'], ['guide'],

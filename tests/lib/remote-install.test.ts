@@ -16,6 +16,10 @@ import {
   classifySshFailure,
   publicKeyLine,
   sshAuthorizeKeyArgs,
+  sshStartArgs,
+  parseStartLogin,
+  parseStartBasePath,
+  preferredLocalPort,
 } from '../../bin/lib/remote.js';
 
 describe('inLoginShell', () => {
@@ -305,5 +309,31 @@ describe.skipIf(process.platform === 'win32')('adding a key, run by a real shell
     expect(fs.readFileSync(file, 'utf-8')).toBe(`${key}\n`);
     expect(fs.statSync(file).mode & 0o077).toBe(0);
     expect(fs.statSync(path.join(home, '.ssh')).mode & 0o077).toBe(0);
+  });
+});
+
+describe('the web app over --remote', () => {
+  it('asks the remote for a browser sign-in only when opening the web app', () => {
+    expect(sshStartArgs('h').at(-1)).toBe('spaces start --print-token');
+    expect(sshStartArgs('h', { login: true }).at(-1)).toBe('spaces start --print-token --print-login');
+    expect(sshStartArgs('h', { login: true, loginShell: true }).at(-1)).toMatch(/spaces start --print-token --print-login'$/);
+    expect(sshInstallArgs('h', `${PACKAGE}@1.0.1`, { login: true }).at(-1)).toMatch(/&& spaces start --print-token --print-login'$/);
+  });
+
+  it('reads the sign-in code and the base path from what start printed', () => {
+    const out = 'SPACES_PORT=3457\nSPACES_TOKEN=aaa.bbb\nSPACES_LOGIN=eyJrIjoibG9naW4ifQ.sig_-x\nSPACES_BASE_PATH=/spaces/\n';
+    expect(parseStartLogin(out)).toBe('eyJrIjoibG9naW4ifQ.sig_-x');
+    expect(parseStartBasePath(out)).toBe('/spaces');
+    expect(parseStartLogin('SPACES_PORT=3457\n')).toBeNull();
+    expect(parseStartLogin('SPACES_LOGIN=a.b;rm\n')).toBeNull();
+    expect(parseStartBasePath('SPACES_PORT=3457\n')).toBe('');
+    expect(parseStartBasePath('SPACES_BASE_PATH=javascript:alert(1)\n')).toBe('');
+  });
+
+  it('tunnels from the same local port for the same machine', () => {
+    const p = preferredLocalPort('jlongo@192.168.1.20');
+    expect(p).toBe(preferredLocalPort('jlongo@192.168.1.20'));
+    expect(p).toBeGreaterThanOrEqual(41000);
+    expect(p).toBeLessThan(42000);
   });
 });

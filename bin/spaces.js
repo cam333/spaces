@@ -198,6 +198,9 @@ if (cliFlags.help) {
                                  update it when it is older than this machine's
     spaces --remote you@host --yes
                                  The same, installing or updating without asking
+    spaces open --remote you@host
+                                 The web app for Spaces on another machine, in your
+                                 browser, through an SSH tunnel (Ctrl+C closes it)
     spaces start                 Start the server in the background, if it is not running
     spaces open                  Open the web app in your browser, signed in
     spaces signout               Sign out every browser and terminal client
@@ -244,8 +247,8 @@ if (cliFlags.help) {
 const subcommand = args[0];
 // `--remote` means "the terminal client, over there". With any other command
 // it would be silently ignored and the command would run here instead.
-if (cliFlags.remote && subcommand && subcommand !== 'tui' && !subcommand.startsWith('-')) {
-  console.error(`  --remote works with "spaces" and "spaces tui", not "spaces ${subcommand}".`);
+if (cliFlags.remote && subcommand && subcommand !== 'tui' && subcommand !== 'open' && !subcommand.startsWith('-')) {
+  console.error(`  --remote works with "spaces", "spaces tui" and "spaces open", not "spaces ${subcommand}".`);
   console.error(`  To run that on the other machine: ssh ${cliFlags.remote} spaces ${subcommand}`);
   process.exit(2);
 }
@@ -298,7 +301,7 @@ if (subcommand === 'service') {
 }
 
 // ─── Route tui to the platform terminal-client binary ─────
-if (subcommand === 'tui' || cliFlags.remote) {
+if (subcommand === 'tui' || (cliFlags.remote && subcommand !== 'open')) {
   // Explicit `spaces tui` never silently opens a browser: the user asked
   // for the terminal client by name, so a failure is reported as one. Bare
   // `spaces --remote host` asks for the same thing.
@@ -322,7 +325,11 @@ if (subcommand === 'signout') {
 }
 
 // ─── Open the web app, signed in / setup wizard / server ──
-if (subcommand === 'open') {
+if (subcommand === 'open' && cliFlags.remote) {
+  // Waits for the tunnel on the event loop: part of this chain for the
+  // same reason as `open` below.
+  openRemote(cliFlags.remote);
+} else if (subcommand === 'open') {
   // Exits by itself: at once, or on Linux once the timer that removes the
   // sign-in redirect page fires. Part of this chain so it no longer falls
   // through to "Unknown command" while that timer is pending.
@@ -591,6 +598,19 @@ function startDetached(startArgs) {
     const session = desktopSessionToken();
     if (session) console.log(`SPACES_TOKEN=${session}`);
   }
+  // `spaces open --remote` asks for this: a browser sign-in code, the kind
+  // `spaces open` puts in its link (one use, two minutes), and the path the
+  // web app is served under. The secret itself never leaves this machine.
+  if (!multiuser && startArgs.includes('--print-login')) {
+    if (!listenerIsMine(port)) refuseForeignListener(port);
+    const secret = require('./lib/desktop-auth').readSecret(SPACES_DIR);
+    if (secret) {
+      const { createLoginCodes } = require('./lib/desktop-auth');
+      console.log(`SPACES_LOGIN=${createLoginCodes(() => secret).mint()}`);
+      const basePath = process.env.SPACES_BASE_PATH || readSavedConfig().basePath || '';
+      if (basePath) console.log(`SPACES_BASE_PATH=${basePath}`);
+    }
+  }
   process.exit(0);
 }
 
@@ -783,11 +803,46 @@ function launchRemote(dest, tuiArgs) {
     process.exit(1);
   }
 
+  const { start: r, localPort, closeTunnel } = connectRemote(dest);
+
+  // 3. The client, through the tunnel. The remote trusts it as local,
+  // because over there that is what it is.
+  const { token, rest } = splitToken(clientArgs);
+  const env = { ...process.env };
+  // The remote's own session token, handed back over SSH by
+  // `spaces start --print-token`; the remote's secret never leaves it.
+  const remoteToken = token || remote.parseStartToken(r.stdout);
+  if (!remoteToken) {
+    closeTunnel();
+    console.error(`  Spaces on ${dest} did not hand back a sign-in token. It may be an older`);
+    console.error(`  version; update it there (ssh ${dest} 'npm install -g @jlongo78/agent-spaces').`);
+    process.exit(1);
+  }
+  env.SPACES_TOKEN = remoteToken;
+  const status = runTuiBinary(tuiBin, buildTuiArgs(rest, localPort), { env });
+  closeTunnel();
+  console.log(`  Spaces is still running on ${dest} — "ssh ${dest} spaces stop" shuts it down.`);
+  process.exit(status);
+}
+
+/**
+ * What `spaces --remote` and `spaces open --remote` share: Spaces running on
+ * `dest` (installed or updated first, with the user's say-so) and an SSH
+ * tunnel to it from a local port. `login` also asks for a browser sign-in
+ * code; `localPort` is tried before any free port. Returns what `spaces
+ * start` printed over there, the local end of the tunnel, and ways to ask
+ * after it and close it. Exits, with the reason, when any step fails.
+ */
+function connectRemote(dest, { login = false, localPort: wantedPort = null } = {}) {
+  const remote = require('./lib/remote');
+  const { tailLines } = require('./spaces-tui');
+  const { spawnSync } = require('child_process');
+
   // 1. Make sure Spaces is running over there, and learn its port —
   // installing or updating it first, with the user's say-so.
   console.log(`  Connecting to ${dest}...`);
-  const prepared = ensureRemoteInstall(dest);
-  const runStart = (loginShell) => spawnSync('ssh', sshWithKey(remote.sshStartArgs(dest, { loginShell })), {
+  const prepared = ensureRemoteInstall(dest, { login });
+  const runStart = (loginShell) => spawnSync('ssh', sshWithKey(remote.sshStartArgs(dest, { loginShell, login })), {
     // No stdin, as for the probe in ensureRemoteInstall: nothing reads it.
     stdio: ['ignore', 'pipe', 'pipe'],
     encoding: 'utf-8',
@@ -832,8 +887,8 @@ function launchRemote(dest, tuiArgs) {
     process.exit(1);
   }
 
-  // 2. Tunnel a free local port to it.
-  const localPort = freeLocalPort();
+  // 2. Tunnel a local port to it.
+  const localPort = (wantedPort && localPortIsFree(wantedPort)) ? wantedPort : freeLocalPort();
   if (!localPort) {
     console.error('  Could not find a free local port for the tunnel.');
     process.exit(1);
@@ -876,26 +931,77 @@ function launchRemote(dest, tuiArgs) {
     relay(remote.withoutDebug(readLog()));
     process.exit(1);
   }
+  return { start: r, localPort, tunnel, closeTunnel, tunnelAlive };
+}
 
-  // 3. The client, through the tunnel. The remote trusts it as local,
-  // because over there that is what it is.
-  const { token, rest } = splitToken(clientArgs);
-  const env = { ...process.env };
-  // The remote's own session token, handed back over SSH by
-  // `spaces start --print-token`; the remote's secret never leaves it.
-  const remoteToken = token || remote.parseStartToken(r.stdout);
-  if (!remoteToken) {
+/** True when nothing on this machine listens on 127.0.0.1:`port`. */
+function localPortIsFree(port) {
+  const { spawnSync } = require('child_process');
+  const r = spawnSync(process.execPath, ['-e', `
+    const s = require('net').createServer();
+    s.on('error', () => process.exit(1));
+    s.listen(${Number(port)}, '127.0.0.1', () => s.close(() => process.exit(0)));
+  `], { stdio: 'ignore', timeout: 5000 });
+  return r.status === 0;
+}
+
+/**
+ * `spaces open --remote <dest>`: the web app for Spaces on another machine.
+ * Connects as `spaces --remote` does, then signs the browser in through
+ * the tunnel with a one-time code made over there, and keeps the tunnel up
+ * until Ctrl+C.
+ *
+ * 127.0.0.1 rather than localhost: browsers keep cookies per host name, not
+ * per port, so a remote signed in at localhost would replace the sign-in to
+ * this machine's own Spaces at localhost:3457, and back again.
+ */
+function openRemote(dest) {
+  const remote = require('./lib/remote');
+  try {
+    remote.validateDestination(dest);
+  } catch (e) {
+    console.error(`  ${e.message}`);
+    process.exit(2);
+  }
+  if (cliFlags.port || cliFlags.basePath) {
+    console.error('  --port and --base-path describe this machine\'s server, not the remote\'s.');
+    process.exit(2);
+  }
+  const { start, localPort, closeTunnel, tunnel } = connectRemote(dest, {
+    login: true,
+    localPort: remote.preferredLocalPort(dest),
+  });
+  const code = remote.parseStartLogin(start.stdout);
+  if (!code) {
     closeTunnel();
-    console.error(`  Spaces on ${dest} did not hand back a sign-in token. It may be an older`);
-    console.error(`  version; update it there (ssh ${dest} 'npm install -g @jlongo78/agent-spaces').`);
+    console.error(`  Spaces on ${dest} did not hand back a browser sign-in. It needs Spaces 1.0.1 or`);
+    console.error(`  newer there; "spaces --remote ${dest}" offers to update it.`);
     process.exit(1);
   }
-  env.SPACES_TOKEN = remoteToken;
-  const status = runTuiBinary(tuiBin, buildTuiArgs(rest, localPort), { env });
-  closeTunnel();
-  console.log(`  Spaces is still running on ${dest} — "ssh ${dest} spaces stop" shuts it down.`);
-  process.exit(status);
+  const home = `http://127.0.0.1:${localPort}${remote.parseStartBasePath(start.stdout)}`;
+  const url = `${home}/auth/desktop?code=${code}`;
+  if (!openSignInLink(url)) {
+    console.log('  Open this link in your browser within two minutes (it works once):');
+    console.log(`    ${url}`);
+  }
+  console.log(`  Spaces on ${dest} is at ${home} while this runs. Ctrl+C closes the tunnel.`);
+  let stopping = false;
+  const stop = () => {
+    stopping = true;
+    closeTunnel();
+    console.log(`\n  Closed the tunnel to ${dest}; Spaces keeps running there.`);
+    process.exit(0);
+  };
+  process.on('SIGINT', stop);
+  process.on('SIGTERM', stop);
+  // Ctrl+C reaches ssh too, so it may exit before the handler above runs.
+  tunnel.on('exit', () => {
+    if (stopping) return;
+    console.error(`  The SSH tunnel to ${dest} closed; run this again to reconnect.`);
+    process.exit(1);
+  });
 }
+
 
 // ─── TLS certificate ────────────────────────────────────────
 // Uses a real cert if configured in server.json (tlsCert, tlsKey, optional
@@ -1837,7 +1943,7 @@ function offerSshKey(dest) {
  * `started` (the install's ssh result, which already started the server),
  * so the connection step does not open sessions it needs no longer.
  */
-function ensureRemoteInstall(dest) {
+function ensureRemoteInstall(dest, { login = false } = {}) {
   const remote = require('./lib/remote');
   const { spawnSync } = require('child_process');
   const local = require('../package.json').version;
@@ -1874,7 +1980,7 @@ function ensureRemoteInstall(dest) {
   }
   const install = ({ restart }) => {
     console.log(`  Installing ${spec} on ${dest}. Compiling the terminal library can take a minute...`);
-    const r = spawnSync('ssh', sshWithKey(remote.sshInstallArgs(dest, spec, { restart })), {
+    const r = spawnSync('ssh', sshWithKey(remote.sshInstallArgs(dest, spec, { restart, login })), {
       stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf-8',
     });
     if (r.status === 0) {

@@ -127,6 +127,18 @@ default key, or creates `~/.ssh/id_ed25519`, adds it to
 `~/.ssh/authorized_keys` there with your password one last time, and checks
 it works. A "no" is remembered for that machine.
 
+For the web app instead of the terminal client:
+
+```bash
+spaces open --remote you@devbox
+```
+
+This does the same, then signs your browser in through the tunnel and opens
+it at `http://127.0.0.1:<port>` (not `localhost`, so it never signs you out
+of the Spaces on your own machine). The tunnel stays up until you press
+Ctrl+C. The other machine needs Spaces 1.0.1 or newer, which `--remote`
+offers to install.
+
 Nothing new is exposed on `devbox`: its server stays on its own loopback,
 and the only way in is your SSH login. The terminal client receives a
 session token from `devbox`; the secret it is signed with never leaves

@@ -118,6 +118,18 @@ default key, or creates `~/.ssh/id_ed25519`, adds it to
 `~/.ssh/authorized_keys` there with your password one last time, and checks
 it works. A "no" is remembered for that machine.
 
+For the web app instead of the terminal client:
+
+```bash
+spaces open --remote you@devbox
+```
+
+This does the same, then signs your browser in through the tunnel and opens
+it at `http://127.0.0.1:<port>` (not `localhost`, so it never signs you out
+of the Spaces on your own machine). The tunnel stays up until you press
+Ctrl+C. The other machine needs Spaces 1.0.1 or newer, which `--remote`
+offers to install.
+
 ## Commands
 
 | Command | Does |
@@ -127,6 +139,7 @@ it works. A "no" is remembered for that machine.
 | `spaces --remote <dest>` | The terminal client for Spaces on another machine, over SSH. Offers to install or update Spaces there first; `--yes` skips the questions. |
 | `spaces start` | Start the server in the background, if it is not running. |
 | `spaces open` | Open the web app in your browser, signed in. |
+| `spaces open --remote <dest>` | The web app for Spaces on another machine, through an SSH tunnel, signed in. |
 | `spaces stop` | Stop the server. |
 | `spaces restart` | Restart the server, through the service when one is installed. Running agents stop with it. |
 | `spaces status` | The installed version, whether the server runs, and how many agents are live in it. |

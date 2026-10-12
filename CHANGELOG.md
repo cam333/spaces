@@ -5,6 +5,9 @@ All notable changes to Spaces are recorded here. The project follows
 
 ## Unreleased
 
+- `spaces open --remote you@host`: the web app for Spaces on another machine,
+  through an SSH tunnel, with the browser signed in and kept apart from
+  this machine's own sign-in.
 - `spaces --remote` offers to set up SSH key sign-in when the other machine
   asks for a password, which it would otherwise do for each of its three
   connections.

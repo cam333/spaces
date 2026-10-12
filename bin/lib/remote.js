@@ -90,8 +90,48 @@ const PROBE = inLoginShell([
   'else echo SPACES_MISSING=1; fi',
 ].join(' '));
 
-function sshProbeArgs(dest) {
-  return ['-o', 'ConnectTimeout=15', '--', dest, PROBE];
+function sshProbeArgs(dest, { batch = false } = {}) {
+  return [...(batch ? ['-o', 'BatchMode=yes'] : []), '-o', 'ConnectTimeout=15', '--', dest, PROBE];
+}
+
+// ─── Signing in with a key ──────────────────────────────────
+
+/** The private keys plain `ssh` tries by default, in the order it tries them. */
+const DEFAULT_KEYS = ['id_ed25519', 'id_ecdsa', 'id_rsa'];
+
+/**
+ * Why a no-prompt (`BatchMode`) ssh failed: `'password'` (the server wants a
+ * password, or another key), `'hostkey'` (ssh would have asked about an
+ * unknown host key), or `'other'`.
+ */
+function classifySshFailure(stderr) {
+  const text = String(stderr);
+  if (/Host key verification failed|REMOTE HOST IDENTIFICATION HAS CHANGED/i.test(text)) return 'hostkey';
+  if (/Permission denied/i.test(text)) return 'password';
+  return 'other';
+}
+
+/**
+ * One public key line, as `ssh-keygen` writes it, or null. It travels to the
+ * remote on stdin rather than in the command, but is still checked: it is
+ * about to be trusted for every future sign-in there.
+ */
+function publicKeyLine(text) {
+  const line = String(text).split(/\r?\n/)[0].trim();
+  return /^(ssh-ed25519|ecdsa-sha2-nistp(256|384|521)|ssh-rsa|sk-ssh-ed25519@openssh\.com) [A-Za-z0-9+/]+=*( [^\r\n]*)?$/.test(line)
+    ? line
+    : null;
+}
+
+/**
+ * Adds the public key on stdin to ~/.ssh/authorized_keys on the remote,
+ * once, creating the file with the permissions sshd insists on. `sh -c`
+ * so it runs the same whatever the remote user's own shell is.
+ */
+const AUTHORIZE_KEY = `sh -c 'umask 077; mkdir -p "$HOME/.ssh" && k=$(cat) && touch "$HOME/.ssh/authorized_keys" && { grep -qxF "$k" "$HOME/.ssh/authorized_keys" || printf "%s\\n" "$k" >> "$HOME/.ssh/authorized_keys"; }'`;
+
+function sshAuthorizeKeyArgs(dest) {
+  return ['-o', 'ConnectTimeout=15', '--', dest, AUTHORIZE_KEY];
 }
 
 const SEMVER = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
@@ -323,6 +363,10 @@ module.exports = {
   installHint,
   splitRemote,
   PACKAGE,
+  DEFAULT_KEYS,
+  classifySshFailure,
+  publicKeyLine,
+  sshAuthorizeKeyArgs,
   inLoginShell,
   tunnelReady,
   tunnelAuthenticated,

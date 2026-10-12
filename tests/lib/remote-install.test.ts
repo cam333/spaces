@@ -13,6 +13,9 @@ import {
   tunnelReady,
   tunnelAuthenticated,
   withoutDebug,
+  classifySshFailure,
+  publicKeyLine,
+  sshAuthorizeKeyArgs,
 } from '../../bin/lib/remote.js';
 
 describe('inLoginShell', () => {
@@ -253,5 +256,54 @@ describe('waiting for the tunnel', () => {
   it('shows a failure without the debug chatter', () => {
     expect(withoutDebug(`${log}\r\nbind [127.0.0.1]:40001: Address already in use`))
       .toBe('Authenticated to devbox ([10.0.0.5]:22) using "password".\nbind [127.0.0.1]:40001: Address already in use');
+  });
+});
+
+describe('signing in with a key', () => {
+  it('checks without prompts first, when asked to', () => {
+    expect(sshProbeArgs('h', { batch: true }).slice(0, 2)).toEqual(['-o', 'BatchMode=yes']);
+    expect(sshProbeArgs('h')).not.toContain('BatchMode=yes');
+  });
+
+  it('tells a password refusal from an unknown host key', () => {
+    expect(classifySshFailure('jlongo@h: Permission denied (publickey,password).')).toBe('password');
+    expect(classifySshFailure('Host key verification failed.')).toBe('hostkey');
+    expect(classifySshFailure('ssh: connect to host h port 22: Connection refused')).toBe('other');
+  });
+
+  it('accepts only a well-formed public key line', () => {
+    const key = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEgAlgC6nexample john@laptop';
+    expect(publicKeyLine(`${key}\r\n`)).toBe(key);
+    expect(publicKeyLine('ssh-rsa AAAAB3NzaC1yc2EAAAADAQAB== ')).toBe('ssh-rsa AAAAB3NzaC1yc2EAAAADAQAB==');
+    for (const bad of ['', '-----BEGIN OPENSSH PRIVATE KEY-----', 'ssh-ed25519', 'ssh-ed25519 AAA;rm -rf ~', 'command="x" ssh-ed25519 AAAA']) {
+      expect(publicKeyLine(bad), bad).toBeNull();
+    }
+  });
+
+  it('adds the key from stdin, once, whatever the remote shell', () => {
+    const args = sshAuthorizeKeyArgs('you@devbox');
+    expect(args.slice(-3, -1)).toEqual(['--', 'you@devbox']);
+    expect(args.at(-1)).toMatch(/^sh -c 'umask 077; .*grep -qxF "\$k" .*>> "\$HOME\/\.ssh\/authorized_keys"; }'$/);
+  });
+});
+
+describe.skipIf(process.platform === 'win32')('adding a key, run by a real shell', () => {
+  const fs = require('fs');
+  const os = require('os');
+  const path = require('path');
+  const { spawnSync } = require('child_process');
+
+  it('creates authorized_keys privately and never adds the same key twice', () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'spaces-authkeys-'));
+    const key = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEgAlgC6nexample john@laptop';
+    const run = () => spawnSync('/bin/sh', ['-c', sshAuthorizeKeyArgs('h').at(-1)!], {
+      input: `${key}\n`, encoding: 'utf-8', env: { PATH: '/usr/bin:/bin', HOME: home },
+    });
+    expect(run().status).toBe(0);
+    expect(run().status).toBe(0);
+    const file = path.join(home, '.ssh', 'authorized_keys');
+    expect(fs.readFileSync(file, 'utf-8')).toBe(`${key}\n`);
+    expect(fs.statSync(file).mode & 0o077).toBe(0);
+    expect(fs.statSync(path.join(home, '.ssh')).mode & 0o077).toBe(0);
   });
 });

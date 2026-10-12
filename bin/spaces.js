@@ -787,7 +787,7 @@ function launchRemote(dest, tuiArgs) {
   // installing or updating it first, with the user's say-so.
   console.log(`  Connecting to ${dest}...`);
   const prepared = ensureRemoteInstall(dest);
-  const runStart = (loginShell) => spawnSync('ssh', remote.sshStartArgs(dest, { loginShell }), {
+  const runStart = (loginShell) => spawnSync('ssh', sshWithKey(remote.sshStartArgs(dest, { loginShell })), {
     // No stdin, as for the probe in ensureRemoteInstall: nothing reads it.
     stdio: ['ignore', 'pipe', 'pipe'],
     encoding: 'utf-8',
@@ -845,7 +845,7 @@ function launchRemote(dest, tuiArgs) {
   // or a third prompt arrives with no explanation after two that looked
   // like the whole sign-in.
   console.log(`  Opening an SSH tunnel to Spaces on ${dest}...`);
-  const tunnel = spawn('ssh', remote.sshTunnelArgs(dest, localPort, remotePort), {
+  const tunnel = spawn('ssh', sshWithKey(remote.sshTunnelArgs(dest, localPort, remotePort)), {
     stdio: ['ignore', log, log],
   });
   fs.closeSync(log);
@@ -1700,6 +1700,133 @@ async function printStatus(porcelain) {
 }
 
 /**
+ * `args` for an ssh that `--remote` runs, signing in with SPACES_SSH_KEY
+ * when it names a key. Only tests set it: everyone else signs in with the
+ * keys plain `ssh` uses, which is what the key offer below sets up.
+ */
+function sshWithKey(args) {
+  const key = process.env.SPACES_SSH_KEY;
+  return key ? ['-i', key, ...args] : args;
+}
+
+/**
+ * Where the destinations whose key offer was declined are kept. A function,
+ * not a constant: `--remote` runs while this file is still being read, and
+ * a constant declared down here would not exist yet.
+ */
+function keyOfferDeclinedPath() {
+  return path.join(SPACES_DIR, 'remote-key-declined.json');
+}
+
+function keyOfferDeclined(dest) {
+  try { return JSON.parse(fs.readFileSync(keyOfferDeclinedPath(), 'utf-8')).includes(dest); } catch { return false; }
+}
+
+function declineKeyOffer(dest) {
+  let list = [];
+  try { list = JSON.parse(fs.readFileSync(keyOfferDeclinedPath(), 'utf-8')); } catch { /* none yet */ }
+  if (!Array.isArray(list)) list = [];
+  if (!list.includes(dest)) list.push(dest);
+  try {
+    fs.mkdirSync(SPACES_DIR, { recursive: true });
+    fs.writeFileSync(keyOfferDeclinedPath(), JSON.stringify(list, null, 2));
+  } catch { /* asked again next time, then */ }
+}
+
+/**
+ * The key to sign in with: SPACES_SSH_KEY, else the first of ssh's default
+ * keys that has a public half, else a new ~/.ssh/id_ed25519. A new key has
+ * no passphrase (the account's file permissions protect it, as with any
+ * key ssh-keygen makes by default); on Windows its permissions are narrowed
+ * to this user, since OpenSSH there ignores a private key anyone else can
+ * read. Null, with the reason printed, when no key could be had.
+ */
+function localSshKey() {
+  const remote = require('./lib/remote');
+  const { spawnSync } = require('child_process');
+  const sshDir = path.join(os.homedir(), '.ssh');
+  const wanted = process.env.SPACES_SSH_KEY;
+  if (!wanted) {
+    for (const name of remote.DEFAULT_KEYS) {
+      const key = path.join(sshDir, name);
+      if (fs.existsSync(key) && fs.existsSync(`${key}.pub`)) return { key, created: false };
+    }
+  }
+  const key = wanted || path.join(sshDir, 'id_ed25519');
+  if (fs.existsSync(key) && fs.existsSync(`${key}.pub`)) return { key, created: false };
+  if (fs.existsSync(key)) {
+    console.error(`  ${key} exists without its .pub; not overwriting it.`);
+    return null;
+  }
+  fs.mkdirSync(path.dirname(key), { recursive: true, mode: 0o700 });
+  const comment = `${os.userInfo().username}@${os.hostname()}`.replace(/\s+/g, '-');
+  const r = spawnSync('ssh-keygen', ['-q', '-t', 'ed25519', '-N', '', '-C', comment, '-f', key], {
+    stdio: ['ignore', 'ignore', 'pipe'], encoding: 'utf-8',
+  });
+  if (r.error || r.status !== 0 || !fs.existsSync(`${key}.pub`)) {
+    console.error(`  Could not create an SSH key with ssh-keygen: ${r.error ? r.error.message : (r.stderr || '').trim()}`);
+    return null;
+  }
+  if (process.platform === 'win32') {
+    spawnSync('icacls', [key, '/inheritance:r', '/grant:r', `${os.userInfo().username}:F`], { stdio: 'ignore' });
+  }
+  return { key, created: true };
+}
+
+/**
+ * When `dest` wants a password: offers to set up key sign-in, once per
+ * destination (a "no" is remembered). Adds this machine's public key to
+ * ~/.ssh/authorized_keys there — the last password prompt — then checks
+ * the key works. True when it does.
+ */
+function offerSshKey(dest) {
+  const remote = require('./lib/remote');
+  const { ask } = require('./lib/prompt');
+  const { spawnSync } = require('child_process');
+  if (keyOfferDeclined(dest)) return false;
+
+  console.log(`  ${dest} asks for your password on every connection, and --remote makes three.`);
+  if (ask('  Set up an SSH key so it stops asking? [Y/n] ', ['y', 'n'], 'y') !== 'y') {
+    declineKeyOffer(dest);
+    console.log(`  Not asking again for ${dest}; delete ${keyOfferDeclinedPath()} to be asked again.`);
+    return false;
+  }
+
+  const local = localSshKey();
+  if (!local) return false;
+  let pub = null;
+  try { pub = remote.publicKeyLine(fs.readFileSync(`${local.key}.pub`, 'utf-8')); } catch { /* reported below */ }
+  if (!pub) {
+    console.error(`  ${local.key}.pub is not a public key ssh can use.`);
+    return false;
+  }
+  if (local.created) console.log(`  Created ${local.key} (and .pub).`);
+  console.log(`  Adding it to ~/.ssh/authorized_keys on ${dest}. Your password, one last time:`);
+  const add = spawnSync('ssh', sshWithKey(remote.sshAuthorizeKeyArgs(dest)), {
+    input: `${pub}\n`, stdio: ['pipe', 'pipe', 'pipe'], encoding: 'utf-8',
+  });
+  if (add.error || add.status !== 0) {
+    console.error(`  Could not add the key on ${dest}:`);
+    for (const line of require('./spaces-tui').tailLines(`${add.stderr || ''}`, 4)) console.error(`    ${line.trim()}`);
+    return false;
+  }
+
+  const check = spawnSync('ssh', sshWithKey(['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=15', '--', dest, 'true']), {
+    stdio: ['ignore', 'ignore', 'pipe'], encoding: 'utf-8',
+  });
+  if (check.status !== 0) {
+    console.error(`  The key is on ${dest}, but signing in with it still failed.`);
+    if (process.platform === 'win32') {
+      console.error('  OpenSSH on Windows ignores a private key others can read; to make it yours alone:');
+      console.error(`    icacls "${local.key}" /inheritance:r /grant:r "%USERNAME%":F`);
+    }
+    return false;
+  }
+  console.log(`  Done: ${dest} now signs you in with ${path.basename(local.key)}, here and with plain ssh.`);
+  return true;
+}
+
+/**
  * Before `--remote` connects: installs Spaces on `dest` when it is missing,
  * or updates it when it is older than this machine's — asking first unless
  * `--yes`, and saying how many agents an update would stop. A remote that
@@ -1714,20 +1841,29 @@ function ensureRemoteInstall(dest) {
   const remote = require('./lib/remote');
   const { spawnSync } = require('child_process');
   const local = require('../package.json').version;
+  // isatty, not process.stdin.isTTY: touching process.stdin hands the
+  // terminal to Node's own reader, and the questions below would never be
+  // answered (see lib/prompt.js).
+  const interactive = require('tty').isatty(0) && Boolean(process.stdout.isTTY);
+  const { ask } = require('./lib/prompt');
   // No stdin: neither command reads it, and a session holding the terminal
-  // open can outlive its command. ssh asks for passwords on /dev/tty anyway.
-  const probe = spawnSync('ssh', remote.sshProbeArgs(dest), {
+  // open can outlive its command. ssh asks for passwords on the console.
+  const runProbe = (batch) => spawnSync('ssh', sshWithKey(remote.sshProbeArgs(dest, { batch })), {
     stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf-8',
   });
+  // First without prompts: a key that works needs nothing more. A server
+  // that wants a password gets the offer of a key instead; anything else
+  // (an unknown host key, say) goes to ssh's own questions, as before.
+  let probe = runProbe(true);
+  if (!probe.error && probe.status === 255) {
+    const why = remote.classifySshFailure(probe.stderr);
+    if (why === 'password' && interactive && offerSshKey(dest)) probe = runProbe(true);
+    if (probe.status === 255) probe = runProbe(false);
+  }
   if (probe.error || probe.status === 255) return { shell: false, started: null };
   const probed = remote.parseProbe(probe.stdout);
   const plan = remote.planRemote(probed, local);
   const done = { shell: probed !== null, started: null };
-  // isatty, not process.stdin.isTTY: touching process.stdin hands the
-  // terminal to Node's own reader, and the question below would never be
-  // answered (see lib/prompt.js).
-  const interactive = require('tty').isatty(0) && Boolean(process.stdout.isTTY);
-  const { ask } = require('./lib/prompt');
 
   let spec;
   try {
@@ -1738,7 +1874,7 @@ function ensureRemoteInstall(dest) {
   }
   const install = ({ restart }) => {
     console.log(`  Installing ${spec} on ${dest}. Compiling the terminal library can take a minute...`);
-    const r = spawnSync('ssh', remote.sshInstallArgs(dest, spec, { restart }), {
+    const r = spawnSync('ssh', sshWithKey(remote.sshInstallArgs(dest, spec, { restart })), {
       stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf-8',
     });
     if (r.status === 0) {

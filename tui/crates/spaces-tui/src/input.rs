@@ -1987,11 +1987,22 @@ mod tests {
             };
             route(leave, &mut p, Some("p1"), &m);
             assert!(!p.open, "{leave:?}");
-            assert!(p.picking_session.is_none(), "{leave:?}: the picker outlived itself");
+            assert!(
+                p.picking_session.is_none(),
+                "{leave:?}: the picker outlived itself"
+            );
 
-            route(key(KeyCode::Char('k'), KeyModifiers::CONTROL), &mut p, Some("p1"), &m);
+            route(
+                key(KeyCode::Char('k'), KeyModifiers::CONTROL),
+                &mut p,
+                Some("p1"),
+                &m,
+            );
             assert!(p.open);
-            assert!(p.picking_session.is_none(), "{leave:?}: ctrl+k reopened the picker");
+            assert!(
+                p.picking_session.is_none(),
+                "{leave:?}: ctrl+k reopened the picker"
+            );
         }
     }
 

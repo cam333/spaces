@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import Database from 'better-sqlite3';
 import {
-  matchSessions, readClaudeSessions, createClaudeSessionWatcher,
+  matchSessions, readClaudeSessions, createClaudeSessionWatcher, readProcessTree, readConsoleTree, readConsoleProcesses,
 } from '../../bin/lib/runtime/claude-sessions.js';
 import { createRuntime } from '../../bin/lib/runtime/index.js';
 
@@ -36,6 +36,80 @@ describe('matchSessions', () => {
     const loop = new Map([[5, 6], [6, 5]]);
     expect(matchSessions(panes, [{ pid: 5, sessionId: 'x' }], loop).size).toBe(0);
   });
+});
+
+describe('readProcessTree', () => {
+  it('gives null when ps fails', () => {
+    let cmd = '';
+    let got: any = 'unset';
+    readProcessTree([], (t: any) => { got = t; }, ((c: string, _a: any, _o: any, cb: any) => {
+      cmd = c; cb(new Error('no ps'), '');
+    }) as any);
+    expect(cmd).toBe('ps');
+    expect(got).toBeNull();
+  });
+
+  it.skipIf(process.platform === 'win32')('reads this machine\'s real table', async () => {
+    const t: Map<number, number> | null = await new Promise(r => readProcessTree([], r));
+    expect(t?.get(process.pid)).toBe(process.ppid);
+  });
+});
+
+describe('readConsoleTree (Windows)', () => {
+  // Pane A's console holds the shell, a shim and the agent; pane B's could
+  // not be read. Everything in a console hangs off its pane's pid.
+  const consoles: Record<number, number[]> = { 100: [100, 150, 101], 200: [] };
+  const readConsole = (pid: number, cb: (l: number[]) => void) => cb(consoles[pid] || []);
+
+  it('maps every process in a pane\'s console to that pane', () => {
+    let tree: Map<number, number> | null = null;
+    readConsoleTree(panes, (t: any) => { tree = t; }, readConsole);
+    expect(Object.fromEntries(tree!)).toEqual({ 150: 100, 101: 100 });
+    const found = matchSessions(panes, [{ pid: 101, sessionId: 'a' }, { pid: 400, sessionId: 'x' }], tree!);
+    expect(Object.fromEntries(found)).toEqual({ A: 'a' });
+  });
+
+  it('is null when no console could be read, so the watcher tries again', () => {
+    let tree: any = 'unset';
+    readConsoleTree([{ paneId: 'B', pid: 200 }], (t: any) => { tree = t; }, readConsole);
+    expect(tree).toBeNull();
+  });
+
+  it('gives up on a helper that never answers', async () => {
+    const { EventEmitter } = await import('node:events');
+    let killed = false;
+    const forkFn = () => Object.assign(new EventEmitter(), { kill: () => { killed = true; } });
+    const list: number[] = await new Promise(r => readConsoleProcesses(100, r, forkFn as any));
+    expect(list).toEqual([]);
+    expect(killed).toBe(true);
+  }, 10000);
+
+  it.skipIf(process.platform !== 'win32')('finds a process started through an exec shim in a real pane', async () => {
+    // The case ancestry misses: Git Bash → sh shim → exec'd program.
+    const pty = await import('node-pty');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'spaces-shim-'));
+    fs.writeFileSync(path.join(dir, 'child.js'), "console.log('CHILD ' + process.pid); setInterval(() => {}, 1000)");
+    fs.writeFileSync(path.join(dir, 'fake'), `#!/bin/sh\nexec node "${path.join(dir, 'child.js').replace(/\\/g, '/')}"\n`);
+    const bash = ['C:/Program Files/Git/bin/bash.exe', 'C:/Program Files/Git/usr/bin/bash.exe'].find(b => fs.existsSync(b));
+    if (!bash) return;
+    const term = pty.spawn(bash, [], { name: 'xterm-256color', cols: 80, rows: 24, cwd: os.tmpdir(), env: { ...process.env, PATH: `${dir};${process.env.PATH}` } });
+    let out = '';
+    term.onData((d: string) => { out += d; });
+    try {
+      term.write('fake\r');
+      const deadline = Date.now() + 10000;
+      while (!/CHILD (\d+)/.test(out) && Date.now() < deadline) await new Promise(r => setTimeout(r, 200));
+      const child = Number(/CHILD (\d+)/.exec(out)![1]);
+      const tree: Map<number, number> = await new Promise(r => readConsoleTree([{ paneId: 'A', pid: term.pid }], r));
+      const found = matchSessions([{ paneId: 'A', pid: term.pid }], [{ pid: child, sessionId: 's' }], tree);
+      expect(Object.fromEntries(found)).toEqual({ A: 's' });
+    } finally {
+      term.kill();
+      // The shell lets go of the folder a moment after the kill.
+      await new Promise(r => setTimeout(r, 500));
+      try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* next temp sweep */ }
+    }
+  }, 20000);
 });
 
 describe('readClaudeSessions', () => {
@@ -69,7 +143,7 @@ describe('createClaudeSessionWatcher', () => {
     const w = createClaudeSessionWatcher({
       listPanes: () => [{ paneId: 'A', pid: 100, sessionId: current }],
       onSession: (paneId: string, id: string) => { reported.push(`${paneId}:${id}`); current = id; },
-      readTree: (cb: any) => cb(tree),
+      readTree: (_p: any, cb: any) => cb(tree),
       readSessions: () => sessions,
       intervalMs: 60_000,
     });
@@ -83,12 +157,61 @@ describe('createClaudeSessionWatcher', () => {
     }
   });
 
+  it('reads the process table once per session process, not every tick', () => {
+    // On Windows each read starts PowerShell; /resume keeps the pid.
+    let reads = 0;
+    let current: string | null = null;
+    let sessions = [{ pid: 101, sessionId: 'first' }, { pid: 400, sessionId: 'outside' }];
+    const w = createClaudeSessionWatcher({
+      listPanes: () => [{ paneId: 'A', pid: 100, sessionId: current }],
+      onSession: (_: string, id: string) => { current = id; },
+      readTree: (_p: any, cb: any) => { reads++; cb(tree); },
+      readSessions: () => sessions,
+      intervalMs: 60_000,
+    });
+    try {
+      w.tick(); w.tick(); w.tick();
+      expect(reads).toBe(1);
+      sessions = [{ pid: 101, sessionId: 'second' }, { pid: 400, sessionId: 'outside' }];
+      w.tick();
+      expect(current).toBe('second');
+      expect(reads).toBe(1);
+      sessions = [...sessions, { pid: 202, sessionId: 'new-process' }];
+      w.tick();
+      expect(reads).toBe(2);
+    } finally {
+      w.stop();
+    }
+  });
+
+  it('looks again when a pane is added', () => {
+    let reads = 0;
+    let list = [{ paneId: 'A', pid: 100, sessionId: null as string | null }];
+    const reported: string[] = [];
+    const w = createClaudeSessionWatcher({
+      listPanes: () => list,
+      onSession: (p: string, id: string) => reported.push(`${p}:${id}`),
+      readTree: (_p: any, cb: any) => { reads++; cb(tree); },
+      readSessions: () => [{ pid: 202, sessionId: 'b' }],
+      intervalMs: 60_000,
+    });
+    try {
+      w.tick();
+      list = [...list, { paneId: 'B', pid: 200, sessionId: null }];
+      w.tick();
+      expect(reads).toBe(2);
+      expect(reported).toEqual(['B:b']);
+    } finally {
+      w.stop();
+    }
+  });
+
   it('does nothing where the process table cannot be read', () => {
     const reported: string[] = [];
     const w = createClaudeSessionWatcher({
       listPanes: () => [{ paneId: 'A', pid: 100, sessionId: null }],
       onSession: (p: string) => reported.push(p),
-      readTree: (cb: any) => cb(null),
+      readTree: (_p: any, cb: any) => cb(null),
       readSessions: () => [{ pid: 101, sessionId: 'x' }],
       intervalMs: 60_000,
     });

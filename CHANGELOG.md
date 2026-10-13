@@ -3,6 +3,13 @@
 All notable changes to Spaces are recorded here. The project follows
 [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+- On Windows, a pane's agent conversation was never recorded, so panes
+  restarted after a server restart or reboot began a new conversation
+  instead of resuming the old one. The pane is now found through its
+  console, which survives the way the agent's launcher re-executes itself.
+
 ## 1.0.1
 
 - `spaces open --remote you@host`: the web app for Spaces on another machine,

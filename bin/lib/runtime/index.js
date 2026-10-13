@@ -1000,7 +1000,7 @@ function createRuntime({ nodeId = 'local', spacesDbPath, getApiPort, federationD
         // spawnPane starts only the shell. A fresh pane gets its agent from
         // the client's follow-up agent.start; a restart types it here, so the
         // pane comes back running what it ran before with no second call.
-        if (spawned.launchCommand) writePane(params.paneId, `${spawned.launchCommand}`);
+        if (spawned.launchCommand) writePane(params.paneId, `${spawned.launchCommand}\r`);
         return ok({ paneId: params.paneId, workspaceId, agentType, cwd, resumed: Boolean(agentSession), launchCommand: spawned.launchCommand });
       }
 

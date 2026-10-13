@@ -3,7 +3,7 @@
 All notable changes to Spaces are recorded here. The project follows
 [Semantic Versioning](https://semver.org/).
 
-## Unreleased
+## 1.0.2
 
 - On Windows, a pane's agent conversation was never recorded, so panes
   restarted after a server restart or reboot began a new conversation

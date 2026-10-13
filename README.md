@@ -97,6 +97,10 @@ works once, for two minutes. See [Security](#security).
 spaces --remote you@devbox
 ```
 
+<p align="center">
+  <img src="docs/images/spaces-remote.gif" alt="spaces --remote installing Spaces on a fresh server, connecting, and Claude Code and Codex working there; then the same agents in the browser with spaces open --remote, and on a phone" width="900" />
+</p>
+
 This connects your local terminal client to Spaces on `devbox` over SSH. It
 starts Spaces there if it is not running, opens an SSH tunnel to it, and signs in with a session token the
 remote hands back over SSH. The remote's secret never leaves it, the remote

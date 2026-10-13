@@ -523,46 +523,7 @@ pub fn route_mouse(
         // top of it is what makes one click do the obvious thing — but a
         // space with no panes yet still becomes the selected one, which is
         // the whole reason `selected_space` exists (see its doc comment).
-        SidebarHit::Space(node, id) => {
-            // Selecting a space also selects the machine it is on, so a later
-            // create knows where to go. Deriving the machine from the space id
-            // later cannot work: ids are unique only within a machine.
-            model.selected_node = node;
-            // Whatever was last focused *in that space*, not its first pane —
-            // clicking away and back should return you to what you were doing
-            // there. See `Model::pane_to_focus_in`.
-            let target = model.pane_to_focus_in(&id);
-            // Nothing running, but panes a restart or reboot stopped: start
-            // them again, as opening the space in the web app does.
-            let stopped: Vec<String> = if model.selected_node == model.local_id_owned() {
-                model
-                    .stopped_panes_in(&id)
-                    .iter()
-                    .map(|p| p.id.clone())
-                    .collect()
-            } else {
-                Vec::new()
-            };
-            model.selected_space = Some(id);
-            match target {
-                Some(pane) => Action::Command(Command::FocusPane(pane)),
-                None if !stopped.is_empty() => Action::Command(Command::RestartPanes(stopped)),
-                None => {
-                    // An empty space shows an empty pane area. Leaving
-                    // `focused` pointing into the space you just left kept the
-                    // *previous* space's pane on screen under the new space's
-                    // (empty) tab bar — which reads as the click not having
-                    // worked, and worse, keystrokes still reached that pane.
-                    //
-                    // Not a detach: the socket and the grid stay put, so
-                    // selecting a space that has panes again re-focuses
-                    // instantly. `detached_pane` is left alone because the
-                    // status bar only reports it while something is focused.
-                    model.focused = None;
-                    Action::Redraw
-                }
-            }
-        }
+        SidebarHit::Space(node, id) => open_space(model, node, id),
         SidebarHit::Agent(pane) => Action::Command(Command::FocusPane(pane)),
         // A space needs a name, which a click cannot carry, so `new` opens
         // the palette's naming prompt. `Action::Redraw`, not a `Command`:
@@ -1139,7 +1100,66 @@ fn dispatch_command(cmd: Command, palette: &mut Palette, model: &Model) -> Actio
             palette.picking_pane_color = Some(pane_id);
             Action::Redraw
         }
+        Command::NewSpace => {
+            open_space_prompt(palette);
+            Action::Redraw
+        }
+        // The right-click menu, opened from the keyboard: placed a third of
+        // the way across, near the top, and clamped on screen like any other.
+        Command::OpenMenu(target) => {
+            close_palette(palette);
+            palette.tab_menu = Some(menu::TabMenu {
+                target,
+                column: model.sidebar.screen_width / 3,
+                row: 3,
+            });
+            Action::Redraw
+        }
         cmd => Action::Command(cmd),
+    }
+}
+
+/// Opens space `id` on `node`, as clicking its sidebar row does, and from the
+/// palette's space search: selects it, then focuses the pane last focused in
+/// it, or restarts its stopped panes, or shows it empty.
+pub(crate) fn open_space(model: &mut Model, node: crate::model::NodeId, id: String) -> Action {
+    // Selecting a space also selects the machine it is on, so a later
+    // create knows where to go. Deriving the machine from the space id
+    // later cannot work: ids are unique only within a machine.
+    model.selected_node = node;
+    // Whatever was last focused *in that space*, not its first pane —
+    // clicking away and back should return you to what you were doing
+    // there. See `Model::pane_to_focus_in`.
+    let target = model.pane_to_focus_in(&id);
+    // Nothing running, but panes a restart or reboot stopped: start
+    // them again, as opening the space in the web app does.
+    let stopped: Vec<String> = if model.selected_node == model.local_id_owned() {
+        model
+            .stopped_panes_in(&id)
+            .iter()
+            .map(|p| p.id.clone())
+            .collect()
+    } else {
+        Vec::new()
+    };
+    model.selected_space = Some(id);
+    match target {
+        Some(pane) => Action::Command(Command::FocusPane(pane)),
+        None if !stopped.is_empty() => Action::Command(Command::RestartPanes(stopped)),
+        None => {
+            // An empty space shows an empty pane area. Leaving
+            // `focused` pointing into the space you just left kept the
+            // *previous* space's pane on screen under the new space's
+            // (empty) tab bar — which reads as the click not having
+            // worked, and worse, keystrokes still reached that pane.
+            //
+            // Not a detach: the socket and the grid stay put, so
+            // selecting a space that has panes again re-focuses
+            // instantly. `detached_pane` is left alone because the
+            // status bar only reports it while something is focused.
+            model.focused = None;
+            Action::Redraw
+        }
     }
 }
 
@@ -2983,10 +3003,13 @@ mod mouse_tests {
             open: true,
             ..Default::default()
         };
-        // Index 0 of the untyped menu is the harmless "Next pane".
-        let expected = palette::visible_candidates(&m, &p)[0].1.clone();
-        assert!(matches!(expected, Command::NextPane), "{expected:?}");
-        let action = click_candidate(&mut m, &mut p, 0);
+        // The harmless "Split view" row.
+        let index = palette::visible_candidates(&m, &p)
+            .iter()
+            .position(|(_, c)| matches!(c, Command::ToggleSplit))
+            .expect("offered");
+        let expected = palette::visible_candidates(&m, &p)[index].1.clone();
+        let action = click_candidate(&mut m, &mut p, index);
         assert!(
             matches!(&action, Action::Command(cmd) if *cmd == expected),
             "{action:?}"

@@ -53,7 +53,7 @@ your own machine, and uploads go to the remote.
 
 | Key | Does |
 | --- | --- |
-| `ctrl+k` | Open or close the menu. Type to filter, Enter to run. |
+| `ctrl+k` | Open or close the menu: agents that need you, then the commands. Type to search every agent, space and command; Enter to run. |
 | `ctrl+space d` | Detach: quit the client, leaving every agent running. |
 | `ctrl+space s` | Split the view to show a second pane, or unsplit it. |
 | `ctrl+space f` | Open the active space's Files tab. |

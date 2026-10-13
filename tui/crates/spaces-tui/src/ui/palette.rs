@@ -27,19 +27,25 @@
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Position, Rect};
-use ratatui::style::{Modifier, Style};
-use ratatui::text::Line;
+use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Widget};
 
-use crate::model::{display_state, Model};
+use crate::model::{display_state, DisplayState, Model};
+use spaces_proto::PaneInfo;
+
+use super::menu::MenuTarget;
 
 /// Widest the overlay is allowed to grow, in terminal cells. Narrower
 /// terminals get whatever the pane area actually has.
-const MAX_WIDTH: u16 = 60;
+const MAX_WIDTH: u16 = 76;
 
 /// At most this many candidate rows are drawn at once; the list scrolls to
 /// keep [`Palette::selected`] visible past that (see [`scroll_offset`]).
-const MAX_VISIBLE: usize = 10;
+const MAX_VISIBLE: usize = 14;
+
+/// Most agents the menu lists under "needs you" before you type anything.
+const MAX_NEEDS_YOU: usize = 5;
 
 /// Drawn ahead of [`Palette::query`] on the overlay's first row.
 const QUERY_PREFIX: &str = "> ";
@@ -266,6 +272,12 @@ pub struct PendingPane {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
     FocusPane(String),
+    /// Open a space, as clicking its sidebar row does.
+    SelectSpace(String),
+    /// Open the space-naming prompt, as the sidebar's `new` does.
+    NewSpace,
+    /// Open the right-click menu for a pane or a space.
+    OpenMenu(MenuTarget),
     /// Create a pane running `agent_type` in `workspace_id`.
     ///
     /// `agent_type` must be one of [`AGENT_TYPES`]. It is **not** optional
@@ -444,122 +456,508 @@ pub enum Command {
 /// to 0, and a live pane whose label happens to match the query is almost
 /// always what the user actually meant — putting workspace creation first
 /// would let `Enter` fire on it by accident.
-pub fn candidates(model: &Model, query: &str) -> Vec<(String, Command)> {
-    // The commands that are always there, whatever is running.
-    let mut globals: Vec<(String, Command)> = vec![
-        ("Next pane".to_string(), Command::NextPane),
-        ("Previous pane".to_string(), Command::PrevPane),
-    ];
-    // A new pane where you are is the menu's most common use; the other
-    // spaces' entries follow the panes below.
-    let active = model.active_space_id().map(str::to_string);
-    let new_pane = |ws: &spaces_proto::WorkspaceInfo| {
-        (
-            format!("New pane in {}\u{2026}", ws.name),
-            Command::PickAgent {
-                workspace_id: ws.id.clone(),
-            },
-        )
-    };
-    if let Some(ws) = model
-        .local_workspaces()
-        .iter()
-        .find(|w| Some(&w.id) == active.as_ref())
-    {
-        globals.push(new_pane(ws));
-    }
-    globals.extend([(
-        "Split the view / unsplit it".to_string(),
-        Command::ToggleSplit,
-    )]);
-    if !model.local_workspaces().is_empty() {
-        globals.push(("Browse files".to_string(), Command::OpenFiles));
-    }
-    globals.push(("Detach".to_string(), Command::Detach));
-    globals.push((
-        format!(
-            "Select text to copy / restore clicking \u{2014} {}",
-            if model.mouse_captured {
-                "mouse on"
-            } else {
-                "mouse off"
-            }
-        ),
-        Command::ToggleMouse,
-    ));
-    globals.push((
-        if model.sidebar.is_collapsed(model.sidebar.screen_width) {
-            "Show the sidebar"
-        } else {
-            "Hide the sidebar"
+/// Which section of the main palette an entry sits in. The palette draws a
+/// small header wherever the section changes, so a long list still reads as
+/// a few short ones.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Group {
+    /// Agents waiting on you, or finished and unlooked-at: what the menu is
+    /// most often opened to deal with.
+    NeedsYou,
+    Agents,
+    Spaces,
+    Actions,
+    View,
+}
+
+impl Group {
+    pub fn header(self) -> &'static str {
+        match self {
+            Group::NeedsYou => "needs you",
+            Group::Agents => "agents",
+            Group::Spaces => "spaces",
+            Group::Actions => "actions",
+            Group::View => "view",
         }
-        .to_string(),
-        Command::ToggleSidebar,
-    ));
-    globals.push((
-        format!(
-            "Sort agents: {} \u{2192} {}",
-            model.agent_sort.label(),
-            model.agent_sort.toggled().label()
-        ),
-        Command::ToggleAgentSort,
-    ));
+    }
+}
 
-    // One entry or two per pane and per space: a dozen panes make dozens.
-    let mut items: Vec<(String, Command)> = Vec::new();
-    for pane in model.local_panes().iter().filter(|p| p.live) {
-        let state = display_state(pane).label();
-        items.push((
-            format!("Focus {} \u{2014} {state}", pane.agent_type),
-            Command::FocusPane(pane.id.clone()),
-        ));
-        items.push((
-            format!("Close {} \u{2014} {state}", pane.agent_type),
-            Command::ClosePane(pane.id.clone()),
-        ));
+/// One row of the palette: what it says, what it does, and how it is drawn.
+///
+/// Every mode produces these; only the main menu fills in `group`, `hint` and
+/// `state`, which is what gives it section headers, right-hand hints and the
+/// sidebar's state glyphs.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Entry {
+    pub label: String,
+    /// Dim text on the right: a key chord, or an agent's state in words.
+    pub hint: String,
+    pub group: Option<Group>,
+    /// Drawn as the sidebar's glyph, in the sidebar's color.
+    pub state: Option<DisplayState>,
+    /// Matched by search but never shown: synonyms ("browse" for Files), an
+    /// agent's folder, its pane title.
+    pub keywords: String,
+    pub cmd: Command,
+}
+
+impl Entry {
+    fn new(label: impl Into<String>, cmd: Command) -> Self {
+        Entry {
+            label: label.into(),
+            hint: String::new(),
+            group: None,
+            state: None,
+            keywords: String::new(),
+            cmd,
+        }
     }
-    // Stopped panes come back from here one at a time; the sidebar restarts
-    // a whole space only when nothing in it is running.
-    for pane in model.local_panes().iter().filter(|p| !p.live) {
-        items.push((
-            format!("Restart {} \u{2014} {}", pane.agent_type, pane.cwd),
-            Command::RestartPanes(vec![pane.id.clone()]),
-        ));
+
+    fn in_group(mut self, group: Group) -> Self {
+        self.group = Some(group);
+        self
     }
-    for ws in model
+
+    fn hint(mut self, hint: impl Into<String>) -> Self {
+        self.hint = hint.into();
+        self
+    }
+
+    fn keywords(mut self, keywords: impl Into<String>) -> Self {
+        self.keywords = keywords.into();
+        self
+    }
+}
+
+/// How well `word` matches `hay`, or `None` when it does not.
+/// Case-insensitive. A word matches as a plain substring ("split" in "Split
+/// view"), or letter by letter where each letter starts a word or runs on
+/// from the last ("ns" for "New space", "sv" for "Split view"). Letters
+/// scattered through the middles of words do not count: "det" must not find
+/// "Hide the sidebar".
+pub fn fuzzy_score(hay: &str, word: &str) -> Option<i32> {
+    fuzzy_match(hay, word).map(|(score, _)| score)
+}
+
+/// [`fuzzy_score`] plus the char positions in `hay` it matched, for
+/// highlighting.
+fn fuzzy_match(hay: &str, word: &str) -> Option<(i32, Vec<usize>)> {
+    let hay: Vec<char> = hay.chars().flat_map(char::to_lowercase).collect();
+    let word: Vec<char> = word.chars().flat_map(char::to_lowercase).collect();
+    if word.is_empty() {
+        return Some((0, Vec::new()));
+    }
+    let starts_word = |i: usize| i == 0 || !hay[i - 1].is_alphanumeric();
+
+    // A substring: the best kind of match, better still at a word's start
+    // and best at the very beginning.
+    if let Some(at) = (0..hay.len().saturating_sub(word.len() - 1))
+        .filter(|&i| hay[i..].starts_with(&word))
+        // A letter or two inside a word is noise ("i" in "api"); from three
+        // letters on, a substring anywhere is a real match.
+        .filter(|&i| word.len() >= 3 || starts_word(i))
+        .min_by_key(|&i| (!starts_word(i), i))
+    {
+        let mut score = 40 + 4 * word.len() as i32;
+        if starts_word(at) {
+            score += 15;
+        }
+        if at == 0 {
+            score += 10;
+        }
+        return Some((score, (at..at + word.len()).collect()));
+    }
+
+    // Letter by letter, each one either at a word's start or right after
+    // the previous match. Greedy, preferring to run on: enough for the
+    // initials and word prefixes people actually type.
+    let mut positions: Vec<usize> = Vec::with_capacity(word.len());
+    let mut at = 0;
+    for &c in &word {
+        let next = if positions
+            .last()
+            .is_some_and(|&p| hay.get(p + 1) == Some(&c))
+        {
+            positions.last().map(|&p| p + 1)
+        } else {
+            (at..hay.len()).find(|&i| hay[i] == c && starts_word(i))
+        }?;
+        positions.push(next);
+        at = next + 1;
+    }
+    let runs = positions.windows(2).filter(|w| w[1] == w[0] + 1).count() as i32;
+    Some((10 + 3 * word.len() as i32 + 2 * runs, positions))
+}
+
+/// How well `entry` matches every word of `query`, or `None` when one word
+/// matches nowhere. Words match in any order, each against the label or,
+/// worth less, the hidden keywords — so "focus claude" finds the agent
+/// labelled "claude · api" through its "focus" keyword.
+fn entry_score(entry: &Entry, query: &str) -> Option<i32> {
+    let mut total = 0;
+    for word in query.split_whitespace() {
+        let in_label = fuzzy_score(&entry.label, word).map(|s| s * 2 + 20);
+        // Keywords (folders, synonyms) only from three letters on: one letter
+        // matches some folder in nearly every path.
+        let in_keywords = (word.chars().count() >= 3)
+            .then(|| fuzzy_score(&entry.keywords, word))
+            .flatten();
+        total += in_label.max(in_keywords)?;
+    }
+    Some(total)
+}
+
+/// The char positions of `label` that `query`'s words matched, to draw in a
+/// stronger style. Words matched only through keywords highlight nothing.
+pub fn highlight_positions(label: &str, query: &str) -> Vec<usize> {
+    let mut out: Vec<usize> = query
+        .split_whitespace()
+        .filter_map(|word| fuzzy_match(label, word).map(|(_, p)| p))
+        .flatten()
+        .collect();
+    out.sort_unstable();
+    out.dedup();
+    out
+}
+
+/// What an agent is called in the palette: its type and space, then its
+/// pane title when it has one ("claude · api — DELETE /todos").
+fn agent_label(model: &Model, pane: &PaneInfo) -> String {
+    let space = pane
+        .workspace_id
+        .as_deref()
+        .and_then(|id| model.local_workspaces().iter().find(|w| w.id == id))
+        .map(|w| w.name.as_str())
+        .unwrap_or("no space");
+    let mut label = format!("{} \u{b7} {space}", pane.agent_type);
+    let title = pane.title.trim();
+    // A shell's title is usually the path of the shell program, which says
+    // nothing and buries the row; only a real title is worth the space.
+    let path_like = title.contains('\\') || title.starts_with('/') || title.starts_with('~');
+    if !title.is_empty() && title != pane.agent_type && !path_like {
+        let short: String = title.chars().take(32).collect();
+        label.push_str(" \u{2014} ");
+        label.push_str(&short);
+        if title.chars().count() > 32 {
+            label.push('\u{2026}');
+        }
+    }
+    label
+}
+
+/// An agent's state as the hint on its row: nothing when it has none (a
+/// plain shell), rather than a lone dash.
+fn state_hint(state: DisplayState) -> String {
+    match state {
+        DisplayState::Unknown => String::new(),
+        other => other.label().to_lowercase(),
+    }
+}
+
+/// Every agent as an entry: focus it, or start it again when stopped.
+fn agent_entries(model: &Model) -> Vec<Entry> {
+    model
+        .local_panes()
+        .iter()
+        .map(|pane| {
+            let label = agent_label(model, pane);
+            let keywords = format!("focus go switch jump {} {}", pane.cwd, pane.title);
+            if pane.live {
+                let state = display_state(pane);
+                Entry {
+                    hint: state_hint(state),
+                    state: Some(state),
+                    ..Entry::new(label, Command::FocusPane(pane.id.clone()))
+                        .in_group(Group::Agents)
+                        .keywords(keywords)
+                }
+            } else {
+                Entry::new(label, Command::RestartPanes(vec![pane.id.clone()]))
+                    .in_group(Group::Agents)
+                    .hint("stopped \u{b7} restart")
+                    .keywords(format!("restart start {keywords}"))
+            }
+        })
+        .collect()
+}
+
+/// Agents to deal with now, most urgent first: blocked ones, then finished
+/// ones nobody has looked at. The one you are looking at is not news.
+fn needs_you_entries(model: &Model) -> Vec<Entry> {
+    let mut panes: Vec<&PaneInfo> = model
+        .local_panes()
+        .iter()
+        .filter(|p| p.live && model.focused.as_deref() != Some(p.id.as_str()))
+        .filter(|p| matches!(display_state(p), DisplayState::Blocked | DisplayState::Done))
+        .collect();
+    panes.sort_by_key(|p| std::cmp::Reverse(display_state(p).priority()));
+    panes
+        .into_iter()
+        .take(MAX_NEEDS_YOU)
+        .map(|pane| {
+            let state = display_state(pane);
+            Entry {
+                hint: state_hint(state),
+                state: Some(state),
+                ..Entry::new(
+                    agent_label(model, pane),
+                    Command::FocusPane(pane.id.clone()),
+                )
+                .in_group(Group::NeedsYou)
+            }
+        })
+        .collect()
+}
+
+/// Every space as an entry that opens it, with how many agents it holds.
+fn space_entries(model: &Model) -> Vec<Entry> {
+    model
         .local_workspaces()
         .iter()
-        .filter(|w| Some(&w.id) != active.as_ref())
-    {
-        items.push(new_pane(ws));
+        .map(|ws| {
+            let agents = model
+                .local_panes()
+                .iter()
+                .filter(|p| p.workspace_id.as_deref() == Some(ws.id.as_str()))
+                .count();
+            Entry::new(ws.name.clone(), Command::SelectSpace(ws.id.clone()))
+                .in_group(Group::Spaces)
+                .hint(match agents {
+                    0 => "empty".to_string(),
+                    1 => "1 agent".to_string(),
+                    n => format!("{n} agents"),
+                })
+                .keywords("space go switch open")
+        })
+        .collect()
+}
+
+/// The menu's own commands. `everything` adds the ones only search should
+/// reach (next/previous pane, a new agent in another space, renaming,
+/// closing) so the menu itself stays short.
+fn action_entries(model: &Model, everything: bool) -> Vec<Entry> {
+    let active = model
+        .active_space_id()
+        .and_then(|id| model.local_workspaces().iter().find(|w| w.id == id))
+        .cloned();
+    let focused = model.focused.clone();
+    let mut out = Vec::new();
+
+    if let Some(ws) = &active {
+        out.push(
+            Entry::new(
+                format!("New agent in {}\u{2026}", ws.name),
+                Command::PickAgent {
+                    workspace_id: ws.id.clone(),
+                },
+            )
+            .keywords("new pane agent start claude codex gemini aider shell"),
+        );
+    }
+    out.push(
+        Entry::new("New space\u{2026}", Command::NewSpace).keywords("create workspace project"),
+    );
+    out.push(
+        Entry::new(
+            if model.split.is_some() {
+                "Close the split"
+            } else {
+                "Split view"
+            },
+            Command::ToggleSplit,
+        )
+        .hint("ctrl+space s")
+        .keywords("split unsplit side by side two panes"),
+    );
+    if !model.local_workspaces().is_empty() {
+        out.push(
+            Entry::new("Files", Command::OpenFiles)
+                .hint("ctrl+space f")
+                .keywords("browse files folder upload download edit"),
+        );
+    }
+    if let Some(pane) = &focused {
+        out.push(
+            Entry::new(
+                "This pane\u{2026}",
+                Command::OpenMenu(MenuTarget::Pane(pane.clone())),
+            )
+            .keywords("pane rename color colour move close"),
+        );
+    }
+    if let Some(ws) = &active {
+        out.push(
+            Entry::new(
+                "This space\u{2026}",
+                Command::OpenMenu(MenuTarget::Space(ws.id.clone())),
+            )
+            .keywords("space rename color colour close"),
+        );
+    }
+    out.push(
+        Entry::new("Detach", Command::Detach)
+            .hint("ctrl+space d")
+            .keywords("quit exit leave"),
+    );
+
+    if everything {
+        out.push(Entry::new("Next pane", Command::NextPane).keywords("focus forward"));
+        out.push(Entry::new("Previous pane", Command::PrevPane).keywords("focus back"));
+        if let Some(pane) = &focused {
+            out.push(
+                Entry::new(
+                    "Rename this pane",
+                    Command::RenamePane {
+                        pane_id: pane.clone(),
+                    },
+                )
+                .keywords("name title"),
+            );
+            out.push(
+                Entry::new(
+                    "Color this pane",
+                    Command::PickPaneColor {
+                        pane_id: pane.clone(),
+                    },
+                )
+                .keywords("colour"),
+            );
+            out.push(
+                Entry::new("Close this pane", Command::ClosePane(pane.clone()))
+                    .keywords("kill stop exit"),
+            );
+        }
+        if let Some(ws) = &active {
+            out.push(
+                Entry::new(
+                    "Rename this space",
+                    Command::RenameSpace {
+                        workspace_id: ws.id.clone(),
+                    },
+                )
+                .keywords("name"),
+            );
+            out.push(
+                Entry::new(
+                    "Color this space",
+                    Command::PickSpaceColor {
+                        workspace_id: ws.id.clone(),
+                    },
+                )
+                .keywords("colour"),
+            );
+            out.push(
+                Entry::new("Close this space", Command::CloseSpace(ws.id.clone()))
+                    .keywords("delete remove"),
+            );
+        }
+        for ws in model
+            .local_workspaces()
+            .iter()
+            .filter(|w| Some(&w.id) != active.as_ref().map(|a| &a.id))
+        {
+            out.push(
+                Entry::new(
+                    format!("New agent in {}\u{2026}", ws.name),
+                    Command::PickAgent {
+                        workspace_id: ws.id.clone(),
+                    },
+                )
+                .keywords("new pane agent start"),
+            );
+        }
+    }
+    out.into_iter()
+        .map(|e| e.in_group(Group::Actions))
+        .collect()
+}
+
+/// Settings you flip now and then, kept out of the way at the bottom.
+fn view_entries(model: &Model) -> Vec<Entry> {
+    vec![
+        Entry::new(
+            if model.sidebar.is_collapsed(model.sidebar.screen_width) {
+                "Show the sidebar"
+            } else {
+                "Hide the sidebar"
+            },
+            Command::ToggleSidebar,
+        )
+        .hint("ctrl+space b")
+        .keywords("sidebar panel toggle"),
+        Entry::new(
+            format!("Sort agents by {}", model.agent_sort.toggled().label()),
+            Command::ToggleAgentSort,
+        )
+        .hint("ctrl+space o")
+        .keywords("order sort agents grouped priority space"),
+        Entry::new(
+            if model.mouse_captured {
+                "Let the terminal select text"
+            } else {
+                "Take the mouse back"
+            },
+            Command::ToggleMouse,
+        )
+        .hint("ctrl+space m")
+        .keywords("mouse select copy click"),
+    ]
+    .into_iter()
+    .map(|e| e.in_group(Group::View))
+    .collect()
+}
+
+/// The main palette for `query`.
+///
+/// Nothing typed: a short menu — what needs you, then the commands, then
+/// view settings — never one row per pane. Something typed: a search over
+/// every agent, space and command, each word matched fuzzily and in any
+/// order, best matches first within each section, and a last row that
+/// creates a space by that name.
+pub fn main_entries(model: &Model, query: &str) -> Vec<Entry> {
+    let trimmed = query.trim();
+    if trimmed.is_empty() {
+        let mut out = needs_you_entries(model);
+        out.extend(action_entries(model, false));
+        out.extend(view_entries(model));
+        return out;
     }
 
-    // Opened with nothing typed, this is the menu: the commands first, so
-    // Detach and the rest stay in view however many panes are running.
-    // Typing searches, and then a pane is the likeliest target, so panes
-    // lead and enter on a typed name focuses it.
-    let mut out = if query.trim().is_empty() {
-        globals.extend(items);
-        globals
-    } else {
-        items.extend(globals);
-        items
-    };
-
-    let lowered = query.to_lowercase();
-    out.retain(|(label, _)| label.to_lowercase().contains(&lowered));
-
-    let trimmed = query.trim();
-    if !trimmed.is_empty() {
-        out.push((
+    let mut scored: Vec<(Entry, i32)> = agent_entries(model)
+        .into_iter()
+        .chain(space_entries(model))
+        .chain(action_entries(model, true))
+        .chain(view_entries(model))
+        .filter_map(|e| entry_score(&e, trimmed).map(|s| (e, s)))
+        .collect();
+    // Section order first, so headers come once each; best match first
+    // within a section; the original order breaks ties, so it is stable.
+    scored.sort_by(|(a, sa), (b, sb)| a.group.cmp(&b.group).then(sb.cmp(sa)));
+    let mut out: Vec<Entry> = scored.into_iter().map(|(e, _)| e).collect();
+    let before_view = out
+        .iter()
+        .position(|e| e.group == Some(Group::View))
+        .unwrap_or(out.len());
+    out.insert(
+        before_view,
+        Entry::new(
             format!("Create space \"{trimmed}\""),
             Command::CreateWorkspace {
                 name: trimmed.to_string(),
             },
-        ));
-    }
-
+        )
+        .in_group(Group::Actions),
+    );
     out
+}
+
+/// The main palette's rows as `(label, command)` — see [`main_entries`].
+#[cfg(test)]
+pub fn candidates(model: &Model, query: &str) -> Vec<(String, Command)> {
+    main_entries(model, query)
+        .into_iter()
+        .map(|e| (e.label, e.cmd))
+        .collect()
 }
 
 /// The candidate list for the palette's *current mode* — the one list
@@ -572,19 +970,40 @@ pub fn candidates(model: &Model, query: &str) -> Vec<(String, Command)> {
 /// list is what makes `enter` on an unnamed workspace a no-op that just
 /// closes the prompt, rather than a request the server would reject.
 pub fn visible_candidates(model: &Model, palette: &Palette) -> Vec<(String, Command)> {
+    visible_entries(model, palette)
+        .into_iter()
+        .map(|e| (e.label, e.cmd))
+        .collect()
+}
+
+/// [`visible_candidates`] with each row's section, hint and state — what the
+/// layout and the renderer draw from.
+pub fn visible_entries(model: &Model, palette: &Palette) -> Vec<Entry> {
+    match mode_candidates(model, palette) {
+        Some(list) => list
+            .into_iter()
+            .map(|(label, cmd)| Entry::new(label, cmd))
+            .collect(),
+        None => main_entries(model, &palette.query),
+    }
+}
+
+/// The list for whichever prompt the palette is in, or `None` in the main
+/// menu.
+fn mode_candidates(model: &Model, palette: &Palette) -> Option<Vec<(String, Command)>> {
     if let Some(pane_id) = palette.picking_pane_color.as_deref() {
         let current = model
             .local_panes()
             .iter()
             .find(|p| p.id == pane_id)
             .and_then(|p| p.color.clone());
-        return swatches(current.as_deref(), &palette.query, &mut |hex| {
+        return Some(swatches(current.as_deref(), &palette.query, &mut |hex| {
             Command::UpdatePane {
                 pane_id: pane_id.to_string(),
                 title: None,
                 color: Some(hex.to_string()),
             }
-        });
+        }));
     }
     if let Some(pane_id) = palette.renaming_pane.as_deref() {
         // No emptiness guard, unlike the space prompt: clearing a pane's name
@@ -596,37 +1015,42 @@ pub fn visible_candidates(model: &Model, palette: &Palette) -> Vec<(String, Comm
         } else {
             format!("Rename to \"{trimmed}\"")
         };
-        return vec![(
+        return Some(vec![(
             label,
             Command::UpdatePane {
                 pane_id: pane_id.to_string(),
                 title: Some(trimmed.to_string()),
                 color: None,
             },
-        )];
+        )]);
     }
     if let Some(workspace_id) = palette.picking_color.as_deref() {
-        return color_candidates(model, workspace_id, &palette.query);
+        return Some(color_candidates(model, workspace_id, &palette.query));
     }
     if let Some(workspace_id) = palette.renaming_space.as_deref() {
-        return rename_candidates(workspace_id, &palette.query);
+        return Some(rename_candidates(workspace_id, &palette.query));
     }
     if let Some((workspace_id, agent_type)) = palette.asking_cwd.as_ref() {
         if let Some(listing) = palette.browse.as_ref() {
-            return browse_candidates(workspace_id, agent_type, listing, &palette.query);
+            return Some(browse_candidates(
+                workspace_id,
+                agent_type,
+                listing,
+                &palette.query,
+            ));
         }
-        return cwd_candidates(workspace_id, agent_type, &palette.query);
+        return Some(cwd_candidates(workspace_id, agent_type, &palette.query));
     }
     if let Some(pending) = palette.picking_session.as_ref() {
-        return session_candidates(pending, &palette.query);
+        return Some(session_candidates(pending, &palette.query));
     }
     if let Some(workspace_id) = palette.picking_agent.as_deref() {
-        return agent_candidates(model, workspace_id, &palette.query);
+        return Some(agent_candidates(model, workspace_id, &palette.query));
     }
     if palette.naming_space {
-        return space_name_candidates(&palette.query);
+        return Some(space_name_candidates(&palette.query));
     }
-    candidates(model, &palette.query)
+    None
 }
 
 /// The session picker's list: `new session` first, then one row per session.
@@ -974,6 +1398,31 @@ pub struct PaletteLayout {
     pub bordered: bool,
     /// `(row rect, index into `visible_candidates`)`, top to bottom.
     pub rows: Vec<(Rect, usize)>,
+    /// Section headers in view: drawn, never selectable or clickable.
+    pub headers: Vec<(Rect, Group)>,
+}
+
+/// One drawn line of the list: a section header, or an entry by index.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ListLine {
+    Header(Group),
+    Item(usize),
+}
+
+/// The list as drawn: each entry, with a header wherever the section changes.
+fn list_lines(entries: &[Entry]) -> Vec<ListLine> {
+    let mut out = Vec::with_capacity(entries.len() + 5);
+    let mut last: Option<Group> = None;
+    for (index, entry) in entries.iter().enumerate() {
+        if let Some(group) = entry.group {
+            if last != Some(group) {
+                out.push(ListLine::Header(group));
+            }
+        }
+        last = entry.group;
+        out.push(ListLine::Item(index));
+    }
+    out
 }
 
 /// Lays the overlay out inside `area`, or `None` when the palette is closed
@@ -987,7 +1436,8 @@ pub fn palette_layout(model: &Model, palette: &Palette, area: Rect) -> Option<Pa
     if !palette.open || area.width == 0 || area.height == 0 {
         return None;
     }
-    let items = visible_candidates(model, palette);
+    let entries = visible_entries(model, palette);
+    let lines = list_lines(&entries);
     let bordered = area.width >= 4 && area.height >= 3;
     let chrome = if bordered { 2 } else { 0 };
     // `visible` must be capped by the rows the box will *actually* have for
@@ -1002,7 +1452,7 @@ pub fn palette_layout(model: &Model, palette: &Palette, area: Rect) -> Option<Pa
     // line. The user saw nine unmarked candidates and `enter` fired one that
     // was never on screen.
     let rows_for_candidates = usize::from(area.height.saturating_sub(chrome + 1));
-    let visible = items.len().min(MAX_VISIBLE).min(rows_for_candidates);
+    let visible = lines.len().min(MAX_VISIBLE).min(rows_for_candidates);
     // One row for the query line, plus one per visible candidate. `visible`
     // is capped at MAX_VISIBLE, so the cast can't truncate.
     let content_height = (visible as u16).saturating_add(1);
@@ -1020,21 +1470,38 @@ pub fn palette_layout(model: &Model, palette: &Palette, area: Rect) -> Option<Pa
 
     // Row 0 of `inner` is the query line; candidates start below it, in the
     // same order and from the same `scroll_offset` the renderer draws them.
-    let first = scroll_offset(palette.selected, items.len(), visible);
-    let rows = (first..items.len())
-        .take(visible)
-        .enumerate()
-        .filter_map(|(offset, index)| {
-            let y = inner.y.checked_add(1)?.checked_add(offset as u16)?;
-            (y < inner.y.saturating_add(inner.height))
-                .then(|| (Rect::new(inner.x, y, inner.width, 1), index))
-        })
-        .collect();
+    // Scrolled by drawn line, so the selected entry stays in view however
+    // many headers sit above it.
+    let selected_line = lines
+        .iter()
+        .position(|l| *l == ListLine::Item(palette.selected))
+        .unwrap_or(0);
+    let first = scroll_offset(selected_line, lines.len(), visible);
+    let mut rows = Vec::new();
+    let mut headers = Vec::new();
+    for (offset, line) in lines.iter().skip(first).take(visible).enumerate() {
+        let Some(y) = inner
+            .y
+            .checked_add(1)
+            .and_then(|y| y.checked_add(offset as u16))
+        else {
+            break;
+        };
+        if y >= inner.y.saturating_add(inner.height) {
+            break;
+        }
+        let rect = Rect::new(inner.x, y, inner.width, 1);
+        match *line {
+            ListLine::Header(group) => headers.push((rect, group)),
+            ListLine::Item(index) => rows.push((rect, index)),
+        }
+    }
     Some(PaletteLayout {
         outer,
         inner,
         bordered,
         rows,
+        headers,
     })
 }
 
@@ -1084,7 +1551,7 @@ pub fn render_palette(
 ) -> Option<Position> {
     let clipped = area.intersection(buf.area);
     let layout = palette_layout(model, palette, clipped)?;
-    let items = visible_candidates(model, palette);
+    let items = visible_entries(model, palette);
 
     Clear.render(layout.outer, buf);
     if layout.bordered {
@@ -1127,27 +1594,28 @@ pub fn render_palette(
     // multi-line `Paragraph` would let `ratatui` clip a line the layout
     // believed was on screen, which is how a marker once landed on a row the
     // user could not see.
+    for (rect, group) in &layout.headers {
+        Paragraph::new(Line::styled(
+            format!("  {}", group.header().to_uppercase()),
+            Style::new()
+                .fg(Color::DarkGray)
+                .add_modifier(Modifier::BOLD),
+        ))
+        .render(*rect, buf);
+    }
     for (rect, index) in &layout.rows {
-        let Some((label, _)) = items.get(*index) else {
+        let Some(entry) = items.get(*index) else {
             continue;
         };
-        // A color entry is drawn *in* its color — a terminal cannot show a
-        // swatch, and a list of sixteen hex strings in one color is
-        // unreadable as a picker. The hex text is still there, which is what
-        // survives a styling-stripped terminal.
-        let swatch = (palette.picking_color.is_some() || palette.picking_pane_color.is_some())
-            .then(|| super::sidebar::accent(label.split_whitespace().next()))
-            .flatten();
-        let line = if *index == palette.selected {
-            let mut style = Style::new().add_modifier(Modifier::REVERSED);
-            if let Some(color) = swatch {
-                style = style.fg(color);
-            }
-            Line::styled(format!("{SELECTION_MARKER} {label}"), style)
-        } else if let Some(color) = swatch {
-            Line::styled(format!("  {label}"), Style::new().fg(color))
+        let line = if entry.group.is_some() {
+            menu_line(
+                entry,
+                *index == palette.selected,
+                &palette.query,
+                rect.width,
+            )
         } else {
-            Line::raw(format!("  {label}"))
+            plain_line(entry, palette, *index == palette.selected)
         };
         Paragraph::new(line).render(*rect, buf);
     }
@@ -1161,6 +1629,105 @@ pub fn render_palette(
         x: inner.x.saturating_add(column),
         y: inner.y,
     })
+}
+
+/// A prompt's row: its label, drawn in its color when it is a swatch.
+fn plain_line(entry: &Entry, palette: &Palette, selected: bool) -> Line<'static> {
+    let label = &entry.label;
+    // A color entry is drawn *in* its color — a terminal cannot show a
+    // swatch, and a list of sixteen hex strings in one color is unreadable as
+    // a picker. The hex text is still there, which is what survives a
+    // styling-stripped terminal.
+    let swatch = (palette.picking_color.is_some() || palette.picking_pane_color.is_some())
+        .then(|| super::sidebar::accent(label.split_whitespace().next()))
+        .flatten();
+    if selected {
+        let mut style = Style::new().add_modifier(Modifier::REVERSED);
+        if let Some(color) = swatch {
+            style = style.fg(color);
+        }
+        Line::styled(format!("{SELECTION_MARKER} {label}"), style)
+    } else if let Some(color) = swatch {
+        Line::styled(format!("  {label}"), Style::new().fg(color))
+    } else {
+        Line::raw(format!("  {label}"))
+    }
+}
+
+/// A main-menu row: marker, the agent's state glyph in its color, the label
+/// with the letters the query matched picked out, and the hint flush right.
+fn menu_line(entry: &Entry, selected: bool, query: &str, width: u16) -> Line<'static> {
+    let base = if selected {
+        Style::new().add_modifier(Modifier::REVERSED)
+    } else {
+        Style::new()
+    };
+    // One cell of air between the hint and the border.
+    let width = usize::from(width).saturating_sub(1);
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    let mut used = 2;
+    spans.push(Span::styled(
+        if selected {
+            format!("{SELECTION_MARKER} ")
+        } else {
+            "  ".to_string()
+        },
+        base,
+    ));
+    if let Some(state) = entry.state {
+        spans.push(Span::styled(
+            format!("{} ", super::sidebar::state_icon(state)),
+            base.fg(super::sidebar::state_color(state)),
+        ));
+        used += 2;
+    }
+    let label: Vec<char> = entry.label.chars().collect();
+    // The hint gives way first: on a narrow terminal "Detach" matters, its
+    // chord does not.
+    let mut hint_len = entry.hint.chars().count();
+    if hint_len > 0 && used + label.len() + 2 + hint_len > width {
+        hint_len = 0;
+    }
+    let room = width.saturating_sub(used + if hint_len > 0 { hint_len + 2 } else { 0 });
+    let shown: Vec<char> = if label.len() > room {
+        let mut v: Vec<char> = label.iter().take(room.saturating_sub(1)).copied().collect();
+        v.push('\u{2026}');
+        v
+    } else {
+        label.clone()
+    };
+    let marks = if query.trim().is_empty() {
+        Vec::new()
+    } else {
+        highlight_positions(&entry.label, query)
+    };
+    let strong = base.fg(Color::Cyan).add_modifier(Modifier::BOLD);
+    let mut run = String::new();
+    let mut run_strong = false;
+    for (i, c) in shown.iter().enumerate() {
+        let hit = marks.binary_search(&i).is_ok() && *c != '\u{2026}';
+        if hit != run_strong && !run.is_empty() {
+            spans.push(Span::styled(
+                std::mem::take(&mut run),
+                if run_strong { strong } else { base },
+            ));
+        }
+        run_strong = hit;
+        run.push(*c);
+    }
+    if !run.is_empty() {
+        spans.push(Span::styled(run, if run_strong { strong } else { base }));
+    }
+    used += shown.len();
+    if hint_len > 0 {
+        let pad = width.saturating_sub(used + hint_len).max(1);
+        spans.push(Span::styled(" ".repeat(pad), base));
+        spans.push(Span::styled(entry.hint.clone(), base.fg(Color::DarkGray)));
+    } else if selected {
+        // A selected row is reversed edge to edge, like the prompts' rows.
+        spans.push(Span::styled(" ".repeat(width.saturating_sub(used)), base));
+    }
+    Line::from(spans)
 }
 
 #[cfg(test)]
@@ -1319,12 +1886,16 @@ mod tests {
     }
 
     #[test]
-    fn candidates_include_focus_entries_for_live_panes() {
+    fn searching_finds_an_agent_and_enter_focuses_it() {
         let mut m = Model::default();
         m.local_mut().panes = vec![pane_named("p1", "w1", "claude", "working", true)];
-        let c = candidates(&m, "");
-        assert!(c.iter().any(|(label, cmd)| label.contains("claude")
-            && matches!(cmd, Command::FocusPane(id) if id == "p1")));
+        for query in ["claude", "focus claude", "cla"] {
+            let c = candidates(&m, query);
+            assert!(
+                matches!(&c[0], (label, Command::FocusPane(id)) if label.contains("claude") && id == "p1"),
+                "{query:?}: {c:?}"
+            );
+        }
     }
 
     #[test]
@@ -1348,12 +1919,125 @@ mod tests {
     }
 
     #[test]
-    fn candidates_include_close_entries_for_live_panes() {
+    fn the_menu_never_lists_a_row_per_pane() {
+        // The whole point of the redesign: a dozen panes must not make
+        // dozens of rows. Nothing typed, the menu lists only agents that
+        // need you, the commands and the view settings.
         let mut m = Model::default();
-        m.local_mut().panes = vec![pane_named("p1", "w1", "claude", "working", true)];
+        m.local_mut().panes = (0..12)
+            .map(|i| {
+                pane_named(
+                    &format!("p{i}"),
+                    "w1",
+                    &format!("agent{i}"),
+                    "working",
+                    true,
+                )
+            })
+            .collect();
         let c = candidates(&m, "");
-        assert!(c.iter().any(|(label, cmd)| label.contains("claude")
-            && matches!(cmd, Command::ClosePane(id) if id == "p1")));
+        assert!(
+            !c.iter()
+                .any(|(_, cmd)| matches!(cmd, Command::FocusPane(_) | Command::ClosePane(_))),
+            "{c:?}"
+        );
+        assert!(c.len() <= 12, "{} rows: {c:?}", c.len());
+    }
+
+    #[test]
+    fn closing_is_offered_only_for_the_pane_you_are_in() {
+        let mut m = Model::default();
+        m.local_mut().panes = vec![
+            pane_named("p1", "w1", "claude", "working", true),
+            pane_named("p2", "w1", "codex", "working", true),
+        ];
+        m.focused = Some("p1".into());
+        let closes: Vec<_> = candidates(&m, "close")
+            .into_iter()
+            .filter_map(|(_, cmd)| match cmd {
+                Command::ClosePane(id) => Some(id),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(closes, vec!["p1".to_string()]);
+    }
+
+    #[test]
+    fn agents_that_need_you_lead_the_menu_most_urgent_first() {
+        let mut m = Model::default();
+        let mut finished = pane_named("done", "w1", "codex", "idle", true);
+        finished.seen = false;
+        m.local_mut().panes = vec![
+            pane_named("busy", "w1", "claude", "working", true),
+            finished,
+            pane_named("stuck", "w1", "gemini", "blocked", true),
+        ];
+        let entries = main_entries(&m, "");
+        let needs: Vec<_> = entries
+            .iter()
+            .take_while(|e| e.group == Some(Group::NeedsYou))
+            .map(|e| match &e.cmd {
+                Command::FocusPane(id) => id.as_str(),
+                other => panic!("{other:?}"),
+            })
+            .collect();
+        assert_eq!(needs, vec!["stuck", "done"]);
+    }
+
+    #[test]
+    fn the_pane_you_are_in_is_not_news() {
+        let mut m = Model::default();
+        m.local_mut().panes = vec![pane_named("stuck", "w1", "gemini", "blocked", true)];
+        m.focused = Some("stuck".into());
+        assert!(!main_entries(&m, "")
+            .iter()
+            .any(|e| e.group == Some(Group::NeedsYou)));
+    }
+
+    #[test]
+    fn spaces_are_searchable_and_enter_opens_one() {
+        let mut m = Model::default();
+        m.local_mut().workspaces = vec![WorkspaceInfo {
+            git: None,
+            id: "w1".into(),
+            name: "frontend".into(),
+            color: None,
+            pane_ids: vec![],
+        }];
+        let c = main_entries(&m, "front");
+        assert!(c.iter().any(|e| e.group == Some(Group::Spaces)
+            && matches!(&e.cmd, Command::SelectSpace(id) if id == "w1")));
+    }
+
+    #[test]
+    fn scattered_letters_do_not_match() {
+        assert!(fuzzy_score("Hide the sidebar", "det").is_none());
+        assert!(fuzzy_score("Split view", "split").is_some());
+        assert!(fuzzy_score("New space", "ns").is_some());
+        assert!(fuzzy_score("Split view", "sv").is_some());
+        assert!(fuzzy_score("claude \u{b7} api", "api").is_some());
+        assert!(
+            fuzzy_score("shell \u{b7} api", "i").is_none(),
+            "one letter inside a word"
+        );
+        assert!(
+            fuzzy_score("shell \u{b7} infra", "i").is_some(),
+            "one letter starting a word"
+        );
+        assert!(
+            fuzzy_score("Split view", "split") > fuzzy_score("Split view", "sv"),
+            "a substring beats initials"
+        );
+    }
+
+    #[test]
+    fn matched_letters_are_the_ones_highlighted() {
+        assert_eq!(highlight_positions("Split view", "view"), vec![6, 7, 8, 9]);
+        assert_eq!(highlight_positions("New space", "ns"), vec![0, 4]);
+        assert!(
+            highlight_positions("Files", "browse").is_empty(),
+            "a keyword match marks nothing"
+        );
     }
 
     #[test]
@@ -1804,17 +2488,17 @@ mod tests {
     }
 
     #[test]
-    fn next_pane_is_always_offered() {
+    fn next_pane_is_found_by_search() {
         let m = Model::default();
-        assert!(candidates(&m, "")
+        assert!(candidates(&m, "next")
             .iter()
             .any(|(_, c)| matches!(c, Command::NextPane)));
     }
 
     #[test]
-    fn prev_pane_is_always_offered() {
+    fn prev_pane_is_found_by_search() {
         let m = Model::default();
-        assert!(candidates(&m, "")
+        assert!(candidates(&m, "previous")
             .iter()
             .any(|(_, c)| matches!(c, Command::PrevPane)));
     }
@@ -1905,7 +2589,7 @@ mod tests {
         // 8 live panes -> 16 focus/close entries + 3 always-on = 19
         // candidates, more than the 10 the overlay draws at once.
         let mut m = Model::default();
-        m.local_mut().panes = (0..8)
+        m.local_mut().panes = (0..16)
             .map(|i| {
                 pane_named(
                     &format!("p{i}"),
@@ -1916,16 +2600,17 @@ mod tests {
                 )
             })
             .collect();
-        let all = candidates(&m, "");
+        let all = candidates(&m, "agent");
         assert!(all.len() > MAX_VISIBLE, "precondition: {}", all.len());
         let last = all.len() - 1;
 
         let area = Rect::new(0, 0, 60, 20);
         let mut buf = Buffer::empty(area);
-        render_palette(&m, &open("", last), area, &mut buf);
+        render_palette(&m, &open("agent", last), area, &mut buf);
         let out = text(&buf);
         assert!(
-            out.contains(&format!("{SELECTION_MARKER} {}", all[last].0)),
+            out.lines()
+                .any(|l| l.contains(SELECTION_MARKER) && l.contains(&all[last].0)),
             "the selected entry must be drawn: {out}"
         );
         assert!(
@@ -1954,7 +2639,7 @@ mod tests {
                 )
             })
             .collect();
-        let all = candidates(&m, "");
+        let all = candidates(&m, "agent");
         // The precondition is the *relationship* — more candidates than the
         // box can draw, and a selection past the last drawable row — not a
         // literal total. Pinning the total is what made adding a palette
@@ -1969,7 +2654,7 @@ mod tests {
 
         let area = Rect::new(0, 0, 60, 12);
         let mut buf = Buffer::empty(area);
-        render_palette(&m, &open("", 9), area, &mut buf);
+        render_palette(&m, &open("agent", 9), area, &mut buf);
         let out = text(&buf);
 
         let marked: Vec<&str> = out
@@ -2013,8 +2698,6 @@ mod tests {
 
     #[test]
     fn the_agent_sort_is_reachable_by_name_and_says_which_way_it_goes() {
-        // Until now only the panel header's own label toggled it, which a
-        // keyboard user cannot reach at all.
         let mut m = Model::default();
         let entry = |m: &Model, query: &str| {
             candidates(m, query)
@@ -2024,18 +2707,12 @@ mod tests {
         for query in ["", "sort", "SORT AGENTS", "priority", "grouped"] {
             assert!(entry(&m, query).is_some(), "{query:?} must find it");
         }
+        // It names the mode it switches to.
         let (label, _) = entry(&m, "").expect("offered");
-        assert!(
-            label.contains("grouped") && label.contains("priority"),
-            "{label}"
-        );
-        assert!(
-            label.find("grouped") < label.find("priority"),
-            "the current mode first: {label}"
-        );
+        assert!(label.ends_with("priority"), "{label}");
         m.agent_sort = crate::model::AgentSort::Priority;
         let (label, _) = entry(&m, "").expect("offered");
-        assert!(label.find("priority") < label.find("grouped"), "{label}");
+        assert!(label.ends_with("grouped"), "{label}");
     }
 
     #[test]
@@ -2200,7 +2877,7 @@ mod tests {
         // one row that happened to break: for any pane-area height, either
         // the selected row is on screen or no candidate row is.
         let mut m = Model::default();
-        m.local_mut().panes = (0..8)
+        m.local_mut().panes = (0..16)
             .map(|i| {
                 pane_named(
                     &format!("p{i}"),
@@ -2211,12 +2888,12 @@ mod tests {
                 )
             })
             .collect();
-        let all = candidates(&m, "");
+        let all = candidates(&m, "agent");
         for height in 1..=20u16 {
-            for selected in [0usize, 1, 9, 10, 18] {
+            for selected in [0usize, 1, 9, 10, all.len() - 1] {
                 let area = Rect::new(0, 0, 60, height);
                 let mut buf = Buffer::empty(area);
-                render_palette(&m, &open("", selected), area, &mut buf);
+                render_palette(&m, &open("agent", selected), area, &mut buf);
                 let out = text(&buf);
                 let marked = out.lines().filter(|l| l.contains(SELECTION_MARKER)).count();
                 let drew_any_candidate = all.iter().any(|(label, _)| out.contains(label.as_str()));
@@ -2302,20 +2979,22 @@ mod tests {
         m.local_mut()
             .panes
             .push(pane_named("up", "w1", "claude", "idle", true));
-        let restarts: Vec<_> = candidates(&m, "")
-            .into_iter()
-            .filter_map(|(label, cmd)| match cmd {
-                Command::RestartPanes(ids) => Some((label, ids)),
+        let entries = main_entries(&m, "claude");
+        let restarts: Vec<_> = entries
+            .iter()
+            .filter_map(|e| match &e.cmd {
+                Command::RestartPanes(ids) => Some((e.hint.as_str(), ids.clone())),
                 _ => None,
             })
             .collect();
         assert_eq!(
             restarts,
-            vec![(
-                "Restart claude \u{2014} /srv/app".to_string(),
-                vec!["dead".to_string()]
-            )]
+            vec![("stopped \u{b7} restart", vec!["dead".to_string()])]
         );
+        // Found by its folder too.
+        assert!(main_entries(&m, "/srv/app")
+            .iter()
+            .any(|e| matches!(&e.cmd, Command::RestartPanes(_))));
     }
 
     fn listing(parent: Option<&str>) -> FolderListing {

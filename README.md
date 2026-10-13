@@ -160,9 +160,12 @@ offers to install.
   every agent: `×` blocked, `◐` working, `✓` done, `○` idle.
 - **Tabs.** The active space's panes. Right-click a tab to close the pane or
   move it to another space.
-- **Menu.** `ctrl+k`, or the sidebar's `menu` button: create, rename and
-  colour spaces, start an agent (it offers to resume one of the folder's
-  past sessions), focus, close or restart panes.
+- **Menu.** `ctrl+k`, or the sidebar's `menu` button. Opened, it lists the
+  agents that need you (blocked first), then the commands with their
+  shortcuts. Type to search every agent, space and command at once, by any
+  words in any order: `web`, `close`, `focus claude`. Starting an agent
+  offers to resume one of the folder's past sessions; "This pane…" and
+  "This space…" rename, colour, move or close them.
 - **Toasts.** An agent in another pane that blocks or finishes says so; click
   the toast to jump to it.
 - **Restarts.** Panes stopped by a server restart or a reboot start again

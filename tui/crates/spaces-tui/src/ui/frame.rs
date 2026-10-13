@@ -882,9 +882,10 @@ mod tests {
         term.draw(|f| render(&m, &terms, &open_palette("", 0), f))
             .unwrap();
         let out = buffer_text(term.backend().buffer());
-        assert!(out.contains("Focus claude"), "{out}");
-        assert!(out.contains("New pane in frontend"), "{out}");
+        assert!(out.contains("New agent in frontend"), "{out}");
+        assert!(out.contains("Split view"), "{out}");
         assert!(out.contains("Detach"), "{out}");
+        assert!(!out.contains("Close claude"), "no row per pane: {out}");
     }
 
     #[test]
@@ -892,13 +893,15 @@ mod tests {
         let m = model_with(vec![], vec![]);
         // candidates for an empty model are [Next pane, Previous pane,
         // Detach]; index 1 is "Previous pane".
-        let out = rendered_with(&m, &HashMap::new(), &open_palette("", 1));
+        let p = open_palette("", 1);
+        let expected = crate::ui::palette::visible_candidates(&m, &p)[1].0.clone();
+        let out = rendered_with(&m, &HashMap::new(), &p);
         let marked: Vec<&str> = out
             .lines()
             .filter(|line| line.contains('\u{25b8}'))
             .collect();
         assert_eq!(marked.len(), 1, "exactly one row is marked: {out}");
-        assert!(marked[0].contains("Previous pane"), "{out}");
+        assert!(marked[0].contains(&expected), "{expected}: {out}");
     }
 
     #[test]
@@ -993,7 +996,7 @@ mod tests {
         let terms = HashMap::new();
         let backend = TestBackend::new(80, 13);
         let mut term = Terminal::new(backend).unwrap();
-        term.draw(|f| render(&m, &terms, &open_palette("", 9), f))
+        term.draw(|f| render(&m, &terms, &open_palette("agent", 9), f))
             .unwrap();
         let out = buffer_text(term.backend().buffer());
         assert_eq!(
@@ -1512,7 +1515,7 @@ mod tests {
             open: true,
             ..Palette::default()
         };
-        let action = click_drawn(&mut m, &mut p, "New pane in frontend");
+        let action = click_drawn(&mut m, &mut p, "New agent in frontend");
         assert!(matches!(action, crate::input::Action::Redraw), "{action:?}");
         assert_eq!(p.picking_agent.as_deref(), Some("w1"));
     }

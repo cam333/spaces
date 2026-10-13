@@ -2903,12 +2903,26 @@ async fn handle_command(cmd: Command, client: &mut ControlClient, ctx: &mut Pane
         Command::FocusPane(id) => {
             focus_pane(&id, ctx).await;
         }
+        // Opened from the palette's search: does what clicking the space's
+        // sidebar row does, through the same function.
+        Command::SelectSpace(id) => {
+            let node = ctx.model.local_id_owned();
+            match input::open_space(ctx.model, node, id) {
+                Action::Command(Command::FocusPane(pane)) => focus_pane(&pane, ctx).await,
+                Action::Command(Command::RestartPanes(ids)) => {
+                    restart_panes(client, ctx, &ids).await
+                }
+                _ => {}
+            }
+        }
         // Never reaches here: `input::route` intercepts each of these and
         // re-opens the palette in the relevant mode, the same way `Detach` is
         // intercepted before it can reach a connection it does not need. Named
         // rather than caught by `_`, this crate's habit for a
         // should-never-happen case.
         Command::PickAgent { .. }
+        | Command::NewSpace
+        | Command::OpenMenu(_)
         | Command::AskPaneCwd { .. }
         | Command::RenamePane { .. }
         | Command::PickPaneColor { .. }

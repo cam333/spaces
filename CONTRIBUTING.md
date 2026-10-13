@@ -80,6 +80,20 @@ The subject line describes the change from the user's point of view: what
 now works, or what was wrong. The body, when there is one, explains why.
 Keep each commit to one change.
 
+## Agent-detection rules
+
+The blocked/working/done rules for each agent live in
+`bin/lib/runtime/detect/manifests/`. They ship with every release, and
+installs also fetch newer ones daily from agentspaces.co, so a rule fix need
+not wait for a release. After changing a manifest, bump its `version`, then
+publish it to the site's repository:
+
+```bash
+node scripts/publish-detection.js ../spaces_web
+```
+
+and commit and push the site.
+
 ## License
 
 By contributing you agree that your contributions are licensed under the

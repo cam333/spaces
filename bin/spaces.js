@@ -234,6 +234,7 @@ if (cliFlags.help) {
     spaces service logs          Tail service logs
     spaces reset-totp <user>     Reset TOTP/2FA for a user
     spaces guide                 Print the agent guide (how coding agents use Spaces)
+    spaces tips on|off           Show a tip when the terminal client starts, or don't
     spaces --version, -v         Print the installed version
     spaces --help                Show this help
 
@@ -267,6 +268,10 @@ if (subcommand === 'guide') {
   }
   process.stdout.write(fs.readFileSync(guide, 'utf-8'));
   process.exit(0);
+}
+
+if (subcommand === 'tips') {
+  process.exit(require('./lib/tips').tipsCommand(args[1]));
 }
 
 // ─── Route uninstall/upgrade to spaces-install.js ────

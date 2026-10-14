@@ -85,6 +85,20 @@ describe('spaces CLI', () => {
     });
   };
 
+  it('spaces tips off and on write the setting the terminal client reads', () => {
+    const file = path.join(home, '.spaces', 'tui.json');
+    expect(run(['tips']).stdout).toContain('Tips are on');
+    expect(run(['tips', 'off']).status).toBe(0);
+    expect(JSON.parse(fs.readFileSync(file, 'utf-8'))).toEqual({ tips: false });
+    expect(run(['tips']).stdout).toContain('Tips are off');
+    fs.writeFileSync(file, JSON.stringify({ tips: false, other: 1 }));
+    expect(run(['tips', 'on']).status).toBe(0);
+    expect(JSON.parse(fs.readFileSync(file, 'utf-8'))).toEqual({ tips: true, other: 1 });
+    const bad = run(['tips', 'maybe']);
+    expect(bad.status).toBe(2);
+    expect(bad.stderr).toContain('spaces tips off');
+  });
+
   it('--version and -v print the package version and exit 0', () => {
     for (const flag of ['--version', '-v']) {
       const r = run([flag]);

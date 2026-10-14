@@ -49,6 +49,7 @@ mod model;
 mod mouse_forward;
 mod panes;
 mod term;
+mod tips;
 mod transfer;
 mod ui;
 
@@ -1677,6 +1678,12 @@ fn intercept_local(action: Action, model: &mut Model) -> Action {
             model.sidebar.toggle_collapsed();
             Action::Redraw
         }
+        Action::Command(Command::ToggleTips) => {
+            let on = !model.tips_on;
+            tips::save_enabled(on);
+            model.set_tips(on, Instant::now());
+            Action::Redraw
+        }
         Action::Command(Command::ShowFiles) => {
             if model.files_shown.is_none() {
                 model.files_shown = Some(files::FilesLayout::Full);
@@ -1951,6 +1958,9 @@ async fn run(args: Args) -> Result<(), String> {
     load_peer_snapshots(&mut client, &mut model).await;
     let (snapshot, ack) = snapshot_and_subscribe(&mut client).await?;
     apply_prime(&mut model, snapshot, &ack);
+    // A tip for this start, unless this machine turned them off.
+    let tips_on = tips::enabled();
+    model.set_tips(tips_on, Instant::now());
 
     let guard =
         TerminalGuard::enter().map_err(|e| format!("failed to prepare the terminal: {e}"))?;
@@ -3015,7 +3025,8 @@ async fn handle_command(cmd: Command, client: &mut ControlClient, ctx: &mut Pane
         | Command::PickSpaceColor { .. }
         | Command::ToggleMouse
         | Command::ToggleAgentSort
-        | Command::ToggleSidebar => {}
+        | Command::ToggleSidebar
+        | Command::ToggleTips => {}
         Command::CreatePaneWithSession {
             workspace_id,
             agent_type,

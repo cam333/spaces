@@ -3,6 +3,15 @@
 All notable changes to Spaces are recorded here. The project follows
 [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+- The terminal client shows a tip about using Spaces in its status bar
+  when it starts. Turn tips off from the menu (`ctrl+k`, type `tips`) or
+  with `spaces tips off`.
+- In the menu, a search that matched only view settings (such as
+  "sidebar") put "Create space" first, so Enter created a space instead of
+  running the match.
+
 ## 1.0.4
 
 - Pasting several lines into an agent in the terminal client sent each line

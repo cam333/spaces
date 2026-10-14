@@ -444,26 +444,48 @@ fn render_status_bar(model: &Model, area: Rect, buf: &mut Buffer) {
     } else if model.focused.is_some() && model.detached_pane {
         format!("{PANE_DISCONNECTED} \u{b7} {tally}")
     } else {
-        tally
+        tally.clone()
     };
     // What is running, and where: see `brand`. Then the tally after a gap.
     let (badge, used) = super::brand::badge(&model.local().node_id, area.width / 2);
     let text_x = if used > 0 { used + 1 } else { 0 };
     ratatui::text::Line::from(badge).render(Rect::new(area.x, area.y, used, area.height), buf);
-    let text_area = Rect::new(
-        area.x + text_x.min(area.width),
-        area.y,
-        area.width.saturating_sub(text_x),
-        area.height,
-    );
-    Paragraph::new(left).render(text_area, buf);
-
     let hint = if model.mouse_captured {
         PALETTE_HINT
     } else {
         SELECT_MODE_HINT
     };
     let hint_width = hint.chars().count() as u16;
+    // Stops short of the hint, so a long line is cut cleanly rather than
+    // run into it.
+    let text_area = Rect::new(
+        area.x + text_x.min(area.width),
+        area.y,
+        area.width
+            .saturating_sub(text_x)
+            .saturating_sub(hint_width + 2),
+        area.height,
+    );
+    // A tip goes after the tally when both fit, in its place when only the
+    // tip does, and not at all over a notice or a blocked agent: either
+    // matters more than a tip.
+    let fits = |s: &str| s.chars().count() <= usize::from(text_area.width);
+    let left = match model.tip {
+        Some((tip, _)) if left == tally => {
+            let both = format!("{tally}   tip: {tip}");
+            let alone = format!("tip: {tip}");
+            if fits(&both) {
+                both
+            } else if blocked == 0 && fits(&alone) {
+                alone
+            } else {
+                left
+            }
+        }
+        _ => left,
+    };
+    Paragraph::new(left).render(text_area, buf);
+
     if let Some(hint_x) = area
         .width
         .checked_sub(hint_width)
@@ -777,6 +799,55 @@ mod tests {
     fn the_status_bar_shows_the_palette_hint() {
         let m = model_with(vec![], vec![]);
         assert!(rendered(&m, &HashMap::new()).contains("ctrl+k palette"));
+    }
+
+    #[test]
+    fn a_tip_shows_after_the_tally_and_stops_short_of_the_hint() {
+        let mut m = model_with(vec![], vec![]);
+        let now = std::time::Instant::now();
+        m.tip = Some(("ctrl+k finds", now + std::time::Duration::from_secs(30)));
+        let out = rendered(&m, &HashMap::new());
+        let bar = out.lines().last().unwrap_or_default();
+        assert!(bar.contains("0 done   tip: ctrl+k finds"), "{bar}");
+        assert!(
+            bar.trim_end().ends_with("ctrl+k palette"),
+            "the hint is intact: {bar}"
+        );
+        assert!(
+            m.expire_toasts(now + std::time::Duration::from_secs(31)),
+            "and it goes"
+        );
+        assert!(!rendered(&m, &HashMap::new()).contains("tip:"));
+    }
+
+    #[test]
+    fn a_tip_too_long_for_both_takes_the_tallys_place_unless_an_agent_is_blocked() {
+        let tip = "ctrl+space s splits the view to watch two";
+        let mut m = model_with(vec![], vec![]);
+        m.tip = Some((
+            tip,
+            std::time::Instant::now() + std::time::Duration::from_secs(30),
+        ));
+        let bar = rendered(&m, &HashMap::new())
+            .lines()
+            .last()
+            .unwrap_or_default()
+            .to_string();
+        assert!(bar.contains(&format!("tip: {tip}")), "{bar}");
+        assert!(!bar.contains("blocked"), "alone: {bar}");
+        assert!(
+            bar.contains("  ctrl+k palette"),
+            "a gap before the hint: {bar}"
+        );
+
+        m.local_mut().panes = vec![pane_named("p", "w", "claude", AgentState::Blocked, false)];
+        let bar = rendered(&m, &HashMap::new())
+            .lines()
+            .last()
+            .unwrap_or_default()
+            .to_string();
+        assert!(bar.contains("1 blocked"), "the tally wins: {bar}");
+        assert!(!bar.contains("tip:"), "{bar}");
     }
 
     #[test]

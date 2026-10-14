@@ -151,6 +151,7 @@ offers to install.
 | `spaces service install` | Start Spaces at login as a service (systemd, launchd or Task Scheduler). Also `uninstall`, `start`, `stop`, `status`, `logs`. |
 | `spaces upgrade` / `spaces uninstall` | Upgrade or remove the global package. |
 | `spaces guide` | Print the guide that tells coding agents how to use Spaces. |
+| `spaces tips on` / `off` | Whether the terminal client shows a tip in its status bar when it starts (on by default; also in the menu). |
 | `spaces --help` | Everything else. |
 
 ## The terminal client

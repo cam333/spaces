@@ -69,6 +69,11 @@ restarting and creating panes, creating, renaming and colouring spaces, and
 starting an agent, where it offers to resume one of the folder's past
 sessions.
 
+Each start shows a tip about using Spaces in the status bar for half a
+minute. Turn tips off from the menu (`ctrl+k`, type `tips`) or with
+`spaces tips off`; the choice is saved in this machine's
+`~/.spaces/tui.json`, and `SPACES_NO_TIPS=1` skips them for one run.
+
 ## The screen
 
 - **Spaces**, top of the sidebar: one entry per space, with its agents'

@@ -420,6 +420,9 @@ pub enum Command {
     /// [`Command::ToggleAgentSort`]; see
     /// [`crate::model::SidebarState::toggle_collapsed`].
     ToggleSidebar,
+    /// Turn the tips shown at start off for this machine, or back on — see
+    /// `crate::tips`. Local, like [`Command::ToggleSidebar`].
+    ToggleTips,
     /// Create a pane whose session choice has already been made.
     ///
     /// Distinct from [`Command::CreatePane`], which is what *triggers* the
@@ -901,6 +904,15 @@ fn view_entries(model: &Model) -> Vec<Entry> {
         )
         .hint("ctrl+space m")
         .keywords("mouse select copy click"),
+        Entry::new(
+            if model.tips_on {
+                "Stop showing tips at start"
+            } else {
+                "Show tips at start"
+            },
+            Command::ToggleTips,
+        )
+        .keywords("tips hints help"),
     ]
     .into_iter()
     .map(|e| e.in_group(Group::View))
@@ -938,8 +950,16 @@ pub fn main_entries(model: &Model, query: &str) -> Vec<Entry> {
         .iter()
         .position(|e| e.group == Some(Group::View))
         .unwrap_or(out.len());
+    // Last of the actions, which is last of all when nothing but view rows
+    // matched: the first row is what enter picks, and it must be the match,
+    // not a new space named after the search ("tips", "sidebar").
+    let at = if before_view == 0 {
+        out.len()
+    } else {
+        before_view
+    };
     out.insert(
-        before_view,
+        at,
         Entry::new(
             format!("Create space \"{trimmed}\""),
             Command::CreateWorkspace {
@@ -2485,6 +2505,22 @@ mod tests {
             _ => None,
         });
         assert_eq!(found.as_deref(), Some("spaced"));
+    }
+
+    #[test]
+    fn a_search_that_matches_only_view_rows_puts_the_match_first() {
+        // Enter picks the first row. Typing "tips" must turn tips off, not
+        // create a space called "tips".
+        let m = Model::default();
+        for (query, want) in [("tips", "tips"), ("sidebar", "sidebar")] {
+            let c = candidates(&m, query);
+            assert!(c[0].0.to_lowercase().contains(want), "{query}: {c:?}");
+            assert!(
+                matches!(c.last(), Some((_, Command::CreateWorkspace { .. }))),
+                "creating a space is still offered, last: {c:?}"
+            );
+        }
+        assert!(matches!(candidates(&m, "tips")[0].1, Command::ToggleTips));
     }
 
     #[test]

@@ -482,6 +482,12 @@ pub struct Model {
     /// Pending toasts, newest first, at most [`MAX_TOASTS`] — see
     /// [`Model::push_toast`] and [`Model::expire_toasts`].
     pub toasts: Vec<Toast>,
+    /// The tip in the status bar, and when it goes — see `crate::tips`.
+    /// Expired with the toasts.
+    pub tip: Option<(&'static str, Instant)>,
+    /// Whether tips are on for this machine, so the menu can offer the
+    /// opposite.
+    pub tips_on: bool,
     /// Which node a new space is created on — set by clicking a node header
     /// in by-node view. Presentation state, like [`Model::selected_space`];
     /// read through [`Model::target_node`], never directly, so a selection
@@ -606,7 +612,15 @@ impl Model {
     pub fn expire_toasts(&mut self, now: Instant) -> bool {
         let before = self.toasts.len();
         self.toasts.retain(|t| t.expires_at > now);
-        self.toasts.len() != before
+        let tip_went = self.tip.take_if(|(_, until)| *until <= now).is_some();
+        self.toasts.len() != before || tip_went
+    }
+
+    /// Turns tips on or off for this machine. Off clears the one showing;
+    /// on shows one, so the change is visible.
+    pub fn set_tips(&mut self, on: bool, now: Instant) {
+        self.tips_on = on;
+        self.tip = on.then(|| (crate::tips::random(), now + crate::tips::TIP_TTL));
     }
 
     /// Removes `pane_id`'s toast — the one a click just acted on.

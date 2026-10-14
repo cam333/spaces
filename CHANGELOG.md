@@ -3,7 +3,7 @@
 All notable changes to Spaces are recorded here. The project follows
 [Semantic Versioning](https://semver.org/).
 
-## Unreleased
+## 1.0.4
 
 - Pasting several lines into an agent in the terminal client sent each line
   as a command. A paste now reaches the pane as one, wrapped in bracketed

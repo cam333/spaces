@@ -3,6 +3,12 @@
 All notable changes to Spaces are recorded here. The project follows
 [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+- On a busy host where the server's first probe of its own API timed out,
+  the server retried twice per probe and so doubled its probes every two
+  seconds until it ran out of memory. One retry per probe now.
+
 ## 1.0.2
 
 - On Windows, a pane's agent conversation was never recorded, so panes

@@ -57,16 +57,28 @@ let API_PORT = parseInt(process.env.SPACES_PORT || '3457', 10);
 let _apiReady = false;
 function setApiReady() { _apiReady = true; }
 function isApiReady() { return _apiReady; }
-// Poll until the API responds, then mark ready
-function waitForApi() {
+// Poll until the API responds, then mark ready.
+//
+// One retry per probe, whichever way the probe ends. A probe that times out
+// is destroyed, and a destroyed request reports an error as well; retrying
+// on both doubled the probes every round, and on a loaded host whose API
+// missed the first one the server had a million requests in flight to
+// itself within a minute and ran out of memory.
+function waitForApi(get = http.get) {
   const check = () => {
-    const req = http.get(`http://localhost:${API_PORT}/api/tier`, { timeout: 1000 }, (res) => {
+    let retried = false;
+    const retry = () => {
+      if (retried) return;
+      retried = true;
+      setTimeout(check, 2000);
+    };
+    const req = get(`http://localhost:${API_PORT}/api/tier`, { timeout: 1000 }, (res) => {
       res.resume(); // consume body to free socket
       if (res.statusCode < 500) { setApiReady(); return; }
-      setTimeout(check, 2000);
+      retry();
     });
-    req.on('error', () => setTimeout(check, 2000));
-    req.on('timeout', () => { req.destroy(); setTimeout(check, 2000); });
+    req.on('error', retry);
+    req.on('timeout', () => { req.destroy(); retry(); });
   };
   setTimeout(check, 1000);
 }
@@ -2390,5 +2402,5 @@ function detectNewPiSession(paneId, cwd, ws, session, username) {
   }, 2000);
 }
 
-module.exports = { createTerminalServer, getRuntime, setFederationContext, getFederationContext };
+module.exports = { createTerminalServer, getRuntime, setFederationContext, getFederationContext, waitForApi, isApiReady };
 

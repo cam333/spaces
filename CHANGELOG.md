@@ -3,7 +3,7 @@
 All notable changes to Spaces are recorded here. The project follows
 [Semantic Versioning](https://semver.org/).
 
-## Unreleased
+## 1.0.5
 
 - The terminal client shows a tip about using Spaces in its status bar
   when it starts. Turn tips off from the menu (`ctrl+k`, type `tips`) or

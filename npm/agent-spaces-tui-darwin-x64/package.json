@@ -1,6 +1,6 @@
 {
   "name": "@jlongo78/agent-spaces-tui-darwin-x64",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "description": "Terminal client binary for darwin-x64",
   "license": "Apache-2.0",
   "author": "John Longo",

@@ -3,7 +3,7 @@
 All notable changes to Spaces are recorded here. The project follows
 [Semantic Versioning](https://semver.org/).
 
-## Unreleased
+## 1.0.3
 
 - On a busy host where the server's first probe of its own API timed out,
   the server retried twice per probe and so doubled its probes every two

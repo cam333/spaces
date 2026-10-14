@@ -156,6 +156,13 @@ impl PaneTerm {
         })
     }
 
+    /// Whether the program in this pane has asked for bracketed paste
+    /// (`?2004h`): pasted text wrapped in markers, so it can tell a paste
+    /// from typing and keep its line breaks as text rather than as Enter.
+    pub fn bracketed_paste(&self) -> bool {
+        self.term.mode().contains(TermMode::BRACKETED_PASTE)
+    }
+
     /// Resizes the grid to `cols` x `rows`, same clamping as [`PaneTerm::new`].
     pub fn resize(&mut self, cols: u16, rows: u16) {
         let size = Size {
@@ -472,6 +479,16 @@ mod tests {
         assert!(t.mouse_reporting().unwrap().drag);
         t.feed(b"\x1b[?1002l\x1b[?1000l");
         assert_eq!(t.mouse_reporting(), None, "and off again when it stops");
+    }
+
+    #[test]
+    fn bracketed_paste_follows_what_the_program_asked_for() {
+        let mut t = PaneTerm::new(80, 24);
+        assert!(!t.bracketed_paste(), "nothing until a program asks");
+        t.feed(b"\x1b[?2004h");
+        assert!(t.bracketed_paste());
+        t.feed(b"\x1b[?2004l");
+        assert!(!t.bracketed_paste());
     }
 
     #[test]

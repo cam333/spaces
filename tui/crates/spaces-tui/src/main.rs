@@ -57,6 +57,8 @@ use std::io;
 use std::io::Write;
 use std::time::{Duration, Instant};
 
+#[cfg(not(windows))]
+use crossterm::event::{DisableBracketedPaste, EnableBracketedPaste};
 use crossterm::event::{
     DisableMouseCapture, EnableMouseCapture, Event, EventStream, KeyCode, KeyEventKind,
     KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
@@ -288,6 +290,8 @@ fn restore_terminal() {
     restore_sequence(
         || {
             let _ = execute!(io::stdout(), DisableMouseCapture);
+            #[cfg(not(windows))]
+            let _ = execute!(io::stdout(), DisableBracketedPaste);
         },
         || {
             let _ = disable_raw_mode();
@@ -371,6 +375,12 @@ impl TerminalGuard<fn()> {
             return Err(e);
         }
         let _ = execute!(io::stdout(), EnableMouseCapture);
+        // A paste then arrives as one `Event::Paste`. Not on Windows, where
+        // crossterm reads the console API and would see the markers as
+        // keystrokes; there a paste is told from typing by its timing
+        // instead — see `read_burst`.
+        #[cfg(not(windows))]
+        let _ = execute!(io::stdout(), EnableBracketedPaste);
         Ok(Self {
             restore: restore_terminal,
         })
@@ -662,6 +672,52 @@ fn paste_text(keys: &[crossterm::event::KeyEvent]) -> Option<String> {
         }
     }
     Some(text)
+}
+
+/// Whether a paste goes to the focused pane: a live pane has the keys, with
+/// no menu, chord or Files view taking them first.
+fn pane_takes_paste(model: &Model, palette: &Palette) -> bool {
+    !palette.open
+        && !palette.awaiting_chord_key
+        && palette.tab_menu.is_none()
+        && !model.files_have_keys()
+        && !model.local().stale
+        && model.focused.is_some()
+}
+
+/// Pasted text as PTY input. Line breaks go as Enter would send them.
+/// A program that asked for bracketed paste gets the text between the
+/// markers, so a multi-line paste lands as text in its prompt rather than
+/// as one command per line.
+fn pane_paste_bytes(text: &str, bracketed: bool) -> Vec<u8> {
+    let body = text.replace("\r\n", "\r").replace('\n', "\r");
+    if !bracketed {
+        return body.into_bytes();
+    }
+    let mut out = b"\x1b[200~".to_vec();
+    out.extend_from_slice(body.as_bytes());
+    out.extend_from_slice(b"\x1b[201~");
+    out
+}
+
+/// Sends a paste to the focused pane, as one write.
+async fn send_paste(
+    text: &str,
+    conn: &mut PaneConn,
+    terms: &mut HashMap<String, PaneTerm>,
+    focused: Option<&str>,
+) {
+    let term = focused.and_then(|id| terms.get_mut(id));
+    let bracketed = term.as_ref().is_some_and(|t| t.bracketed_paste());
+    if let Some(t) = term {
+        t.scroll_to_bottom();
+    }
+    // Bounded like any pane input — see the `SendPaneInput` arm.
+    let _ = tokio::time::timeout(
+        PANE_ATTACH_TIMEOUT,
+        conn.focused.send_input(pane_paste_bytes(text, bracketed)),
+    )
+    .await;
 }
 
 /// `true` when the cell at `column`, `row` is inside `r`.
@@ -1999,6 +2055,27 @@ async fn run(args: Args) -> Result<(), String> {
                             }
                         }
                     }
+                    // A multi-line paste into an agent must reach it as a
+                    // paste, not as one Enter per line.
+                    Some(Ok(Event::Key(key)))
+                        if key.kind == KeyEventKind::Press && pane_takes_paste(&model, &palette) =>
+                    {
+                        let burst = read_burst(key, &mut input_events, &mut pending_input).await;
+                        match paste_text(&burst) {
+                            Some(text) => {
+                                dirty = true;
+                                send_paste(&text, &mut conn, &mut terms, model.focused.as_deref()).await;
+                                None
+                            }
+                            None => {
+                                for (i, k) in burst.into_iter().skip(1).enumerate() {
+                                    pending_input.insert(i, Event::Key(k));
+                                    replayed_keys += 1;
+                                }
+                                Some(Some(Ok(Event::Key(key))))
+                            }
+                        }
+                    }
                     other => Some(other),
                 };
                 let Some(maybe_event) = unhandled else {
@@ -2367,10 +2444,18 @@ async fn run(args: Args) -> Result<(), String> {
                         // changed the two regions' sizes.
                         resize_visible(&mut ctx).await;
                     }
+                    Some(Ok(Event::Paste(text))) => {
+                        // The terminal's own paste (bracketed paste is on
+                        // outside Windows): to the focused pane as one.
+                        if pane_takes_paste(&model, &palette) {
+                            dirty = true;
+                            send_paste(&text, &mut conn, &mut terms, model.focused.as_deref()).await;
+                        }
+                    }
                     Some(Ok(_other)) => {
-                        // Focus-gained/lost, bracketed paste (mouse now has
-                        // its own arm above) — none of the bindings this
-                        // task pins react to these.
+                        // Focus-gained/lost (mouse now has its own arm
+                        // above) — none of the bindings this task pins
+                        // react to these.
                     }
                     Some(Err(_)) => {
                         // A terminal I/O read error. Nothing to route;
@@ -3571,6 +3656,34 @@ mod tests {
             decide(Action::PaneInput(b"x".to_vec()), true),
             Disposition::Nothing
         );
+    }
+
+    #[test]
+    fn a_paste_keeps_its_line_breaks_for_a_program_that_asked() {
+        assert_eq!(
+            pane_paste_bytes("one\ntwo\r\nthree", true),
+            b"\x1b[200~one\rtwo\rthree\x1b[201~".to_vec()
+        );
+        // Without bracketed paste there is nothing to wrap it in: the lines
+        // go as typed.
+        assert_eq!(pane_paste_bytes("one\ntwo", false), b"one\rtwo".to_vec());
+    }
+
+    #[test]
+    fn a_paste_goes_to_the_pane_only_when_the_pane_has_the_keys() {
+        let mut m = Model::default();
+        let mut p = Palette::default();
+        assert!(!pane_takes_paste(&m, &p), "nothing focused");
+        m.focused = Some("p1".into());
+        assert!(pane_takes_paste(&m, &p));
+        p.open = true;
+        assert!(!pane_takes_paste(&m, &p), "the menu has the keys");
+        p.open = false;
+        p.awaiting_chord_key = true;
+        assert!(!pane_takes_paste(&m, &p), "mid-chord");
+        p.awaiting_chord_key = false;
+        m.local_mut().stale = true;
+        assert!(!pane_takes_paste(&m, &p), "no socket to send to");
     }
 
     #[test]

@@ -3,6 +3,14 @@
 All notable changes to Spaces are recorded here. The project follows
 [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+- After `npm install -g`, `spaces` could be "not recognized" because npm's
+  command folder was not on `PATH`. The install now checks: on Windows it
+  adds the folder to your user `PATH` (`SPACES_NO_PATH_FIX=1` to skip),
+  and everywhere it prints the one line that makes `spaces` work in the
+  terminal you installed from.
+
 ## 1.0.5
 
 - The terminal client shows a tip about using Spaces in its status bar

@@ -39,6 +39,38 @@ try {
   log(`Installed v${pkg.version}`);
 } catch {}
 
+// Make sure "spaces" runs: npm's command folder is not always on PATH.
+// SPACES_NO_PATH_FIX=1 reports without changing the user's PATH.
+try {
+  const pc = require('./lib/path-check');
+  // The package is <global node_modules>/@jlongo78/agent-spaces, and the
+  // global node_modules is <prefix>/node_modules on Windows and
+  // <prefix>/lib/node_modules elsewhere.
+  const globalModules = path.resolve(__dirname, '..', '..', '..');
+  const derived = path.basename(globalModules) === 'node_modules'
+    ? (process.platform === 'win32' ? path.dirname(globalModules) : path.dirname(path.dirname(globalModules)))
+    : null;
+  const dir = pc.globalBinDir(derived || process.env.npm_config_prefix);
+  const isWin = process.platform === 'win32';
+  const terminalPath = process.env.PATH || process.env.Path || '';
+  const needs = dir && !pc.onPath(dir, terminalPath);
+  const todo = needs && pc.plan({
+    dir,
+    terminalPath,
+    userPath: isWin ? pc.readUserPath() : null,
+    allowFix: !process.env.SPACES_NO_PATH_FIX,
+  });
+  if (todo) {
+    const added = todo.addToUserPath ? pc.addToUserPath(dir) : false;
+    const lines = todo.addToUserPath && !added
+      ? todo.lines.map((l) => l.startsWith('Added ') ? `"spaces" is in ${dir}, which is not on your PATH.` : l)
+      : todo.lines;
+    pc.sayToTerminal(`\n  Spaces is installed.\n${lines.map((l) => `  ${l}`).join('\n')}\n\n`);
+  }
+} catch {
+  // Advice only: an install never fails over it.
+}
+
 // Restart the service, but only when one is registered. `spaces service stop`
 // kills node processes on the Spaces ports, so running it on an install with
 // no service would take down a server the user started by hand.

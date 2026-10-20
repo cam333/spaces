@@ -71,6 +71,13 @@ This installs two commands: `spaces` and `spaces-msg`.
 - At least one coding agent on your `PATH` (see [Agents](#agents)), or just
   use plain shell panes.
 
+If npm's command folder is not on your `PATH` (Node installed some way
+other than its installer, a custom npm prefix, or a terminal opened before
+Node was installed), the install says so and prints the line that makes
+`spaces` work in the terminal you are in. On Windows it also adds the
+folder to your user `PATH`, as Node's installer does, so every new terminal
+has it; set `SPACES_NO_PATH_FIX=1` to install without that.
+
 ## Quick start
 
 ```bash

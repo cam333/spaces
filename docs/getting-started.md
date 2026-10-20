@@ -77,7 +77,7 @@ Files tab.
 ## 4. The web app
 
 ```bash
-spaces open
+spaces web
 ```
 
 This opens the web app in your default browser, already signed in. It shows
@@ -85,12 +85,12 @@ the same spaces and panes as the terminal client, live, and adds the session
 browser, the dashboard, per-space todos and settings.
 
 The server answers only its owner, so a browser has to sign in once.
-`spaces open` does that with a link that works one time, for two minutes.
+`spaces web` does that with a link that works one time, for two minutes.
 Opening `http://localhost:3457` in a browser that has not signed in shows a
-"not signed in" page telling you to run `spaces open`. A browser stays signed
+"not signed in" page telling you to run `spaces web`. A browser stays signed
 in for seven days.
 
-If `spaces open` cannot launch a browser (on a machine without a desktop, for
+If `spaces web` cannot launch a browser (on a machine without a desktop, for
 instance) it prints the link instead.
 
 ### Choosing which folders Spaces can see
@@ -130,7 +130,7 @@ it works. A "no" is remembered for that machine.
 For the web app instead of the terminal client:
 
 ```bash
-spaces open --remote you@devbox
+spaces web --remote you@devbox
 ```
 
 This does the same, then signs your browser in through the tunnel and opens
@@ -167,7 +167,7 @@ spaces service uninstall
 This creates a systemd user unit on Linux (with lingering enabled so it
 starts at boot), a launchd agent on macOS, or a Task Scheduler task on
 Windows. The service runs `spaces` in the foreground without opening a
-browser; use `spaces` or `spaces open` to reach it as usual. On Linux, put
+browser; use `spaces` or `spaces web` to reach it as usual. On Linux, put
 any API keys the optional features need in `~/.spaces/env`
 (`NAME=value`, one per line).
 
@@ -220,7 +220,7 @@ refuses to sign in to a server on its port that belongs to a different user.
 Stop that process, or run on another port: `spaces --port 3460`.
 
 **A browser shows "This sign-in link has expired or was already used."** The
-link from `spaces open` works once, for two minutes. Run `spaces open`
+link from `spaces web` works once, for two minutes. Run `spaces web`
 again.
 
 **The terminal client says multiuser mode is on.** The terminal client only

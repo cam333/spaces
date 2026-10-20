@@ -163,7 +163,7 @@ owner.
 - **Tokens** are HMAC-signed with the secret and carry a kind and an
   expiry: `session` (browser cookie and terminal client, 7 days), `api`
   (60 seconds, minted per request by the helper commands) and `login`
-  (single use, 2 minutes, from `spaces open`). The secret itself never goes
+  (single use, 2 minutes, from `spaces web`). The secret itself never goes
   on the wire, and credentials are read from headers and cookies only,
   never from URLs.
 - **The browser** holds the session in the `spaces-desktop` cookie
@@ -177,7 +177,7 @@ owner.
 - **Before handing out a credential**, the launcher checks (on Linux) that
   the process listening on the port belongs to the same account, so another
   user cannot squat the port while Spaces is down and collect a token.
-  On Linux, `spaces open` passes the sign-in link through an owner-only file
+  On Linux, `spaces web` passes the sign-in link through an owner-only file
   rather than the browser's command line, which other accounts can read.
 - **`spaces signout`** writes a new secret and restarts the server, which
   invalidates every token at once.

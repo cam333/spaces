@@ -75,7 +75,7 @@ and a browser that visits untrusted sites.
   owner configured in `SPACES_ALLOWED_ORIGINS`) in its `Host` header, so a
   web page that rebinds its own domain to `127.0.0.1` is refused.
 - **Browser sessions.** A browser signs in only through a single-use link
-  that expires after two minutes (`spaces open`) and gets an HttpOnly,
+  that expires after two minutes (`spaces web`) and gets an HttpOnly,
   SameSite=Strict cookie that is accepted only on requests from Spaces' own
   pages. Sessions last seven days; `spaces signout` replaces the secret and
   ends every session at once.

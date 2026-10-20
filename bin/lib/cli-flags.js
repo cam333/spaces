@@ -31,7 +31,7 @@ const SWITCHES = new Set([
   '--version', '-v',
   // spaces start (what --remote runs on the other machine).
   '--print-token',
-  // spaces start, for spaces open --remote.
+  // spaces start, for spaces web --remote.
   '--print-login',
   // spaces --remote: install or update the other machine without asking.
   '--yes', '-y',

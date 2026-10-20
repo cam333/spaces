@@ -27,7 +27,7 @@ describe('findUnknownFlag', () => {
       ['start', '--print-token'], ['start', '--print-token', '--print-login'], ['open', '--remote', 'me@host'],
       ['start', '--multiuser', '--experimental'],
       ['stop', '--port', '4000'],
-      ['open'], ['signout'], ['guide'],
+      ['open'], ['web'], ['web', '--remote', 'me@host'], ['signout'], ['guide'],
     ];
     for (const args of accepted) expect(findUnknownFlag(args), args.join(' ')).toBeNull();
   });
@@ -112,6 +112,20 @@ describe('spaces CLI', () => {
     expect(r.status).toBe(2);
     expect(r.stderr).toContain('Unknown option: --no-such-flag');
     expect(r.stderr).toContain('spaces --help');
+  });
+
+  it('--help documents spaces web, and bare spaces as the terminal client', () => {
+    const r = run(['--help']);
+    expect(r.stdout).toMatch(/spaces web\s+Open the web app/);
+    expect(r.stdout).toMatch(/spaces web --remote you@host/);
+    expect(r.stdout).toMatch(/spaces\s+Open the terminal client/);
+    expect(r.stdout).not.toContain('spaces open');
+  });
+
+  it('--remote with another command names spaces web, not spaces open', () => {
+    const r = run(['status', '--remote', 'me@host']);
+    expect(r.status).not.toBe(0);
+    expect(r.stderr).toContain('"spaces web"');
   });
 
   it('--help lists --experimental and marks multiuser and federation experimental', () => {

@@ -44,7 +44,7 @@ named, persistent workspaces and fixes that:
 - **It knows who needs you.** Every agent shows as working (`◐`), done
   (`✓`) or blocked waiting for you (`×`), and the one that stops tells you.
 - **The same live agents, wherever you are.** The terminal client
-  (`spaces`), the web app (`spaces open`) and a phone layout are views of
+  (`spaces`), the web app (`spaces web`) and a phone layout are views of
   the same running sessions. Detach, and they keep going.
 - **One command puts it on a server.** `spaces --remote you@box` installs
   Spaces there, sets up your SSH key and connects. Nothing is exposed
@@ -105,12 +105,12 @@ menu, create a space, and start an agent in it. `ctrl+space d` detaches and
 leaves everything running.
 
 ```bash
-spaces open     # open the web app in your browser, already signed in
+spaces web      # open the web app in your browser, already signed in
 spaces stop     # stop the server, and every pane with it
 ```
 
 The server answers only you. Opening `http://localhost:3457` directly shows
-a "not signed in" page; `spaces open` signs the browser in with a link that
+a "not signed in" page; `spaces web` signs the browser in with a link that
 works once, for two minutes. See [Security](#security).
 
 ### On another machine
@@ -147,7 +147,7 @@ it works. A "no" is remembered for that machine.
 For the web app instead of the terminal client:
 
 ```bash
-spaces open --remote you@devbox
+spaces web --remote you@devbox
 ```
 
 This does the same, then signs your browser in through the tunnel and opens
@@ -164,8 +164,8 @@ offers to install.
 | `spaces tui` | The terminal client, explicitly. Never falls back to the browser. |
 | `spaces --remote <dest>` | The terminal client for Spaces on another machine, over SSH. Offers to install or update Spaces there first; `--yes` skips the questions. |
 | `spaces start` | Start the server in the background, if it is not running. |
-| `spaces open` | Open the web app in your browser, signed in. |
-| `spaces open --remote <dest>` | The web app for Spaces on another machine, through an SSH tunnel, signed in. |
+| `spaces web` | Open the web app in your browser, signed in. |
+| `spaces web --remote <dest>` | The web app for Spaces on another machine, through an SSH tunnel, signed in. |
 | `spaces stop` | Stop the server. |
 | `spaces restart` | Restart the server, through the service when one is installed. Running agents stop with it. |
 | `spaces status` | The installed version, whether the server runs, and how many agents are live in it. |
@@ -237,7 +237,7 @@ More in [tui/README.md](tui/README.md).
   <img src="docs/images/web-app.png" alt="The Spaces web app showing the todo-api space: the Claude Code pane has finished and the Codex pane is still working" width="900" />
 </p>
 
-`spaces open` signs your browser in and shows the same spaces and panes as
+`spaces web` signs your browser in and shows the same spaces and panes as
 a grid of browser terminals: the very same agents, not copies, so you can
 start something in the terminal client and finish it here, or the other way
 round. On top of that it has things that suit a bigger screen:
@@ -340,7 +340,7 @@ Desktop mode, the default and the only supported mode, has a single owner:
   with a secret in `~/.spaces/internal_token` that only that account can
   read. Other accounts on the same machine get nothing; arriving over
   loopback proves nothing.
-- Browsers sign in through a one-time link from `spaces open` and get an
+- Browsers sign in through a one-time link from `spaces web` and get an
   HttpOnly, SameSite=Strict cookie. Requests naming any host other than this
   machine's loopback are refused, which stops DNS-rebinding attacks.
   Credentials never go in URLs.

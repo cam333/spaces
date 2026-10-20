@@ -23,7 +23,7 @@ If no server is running on the port, one is started in the background
 The server answers only you. The launcher signs the client in with a session
 token signed with a secret in `~/.spaces` that only your account can read;
 other accounts on the same machine, and web pages in your browser, get
-nothing. To open the web app signed in, run `spaces open`.
+nothing. To open the web app signed in, run `spaces web`.
 
 Multiuser mode refuses `/proto`, so the client cannot run against it. The
 launcher says so and starts nothing, unless `--desktop` overrides the saved

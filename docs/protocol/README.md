@@ -57,7 +57,7 @@ since every account on the machine shares it. A client presents one of:
   `spaces --remote` hand the terminal client, so the secret itself never
   leaves its machine. `x-spaces-internal: <secret>` is accepted too.
 - The browser's `spaces-desktop` session cookie (HttpOnly, SameSite=Strict),
-  which `spaces open` obtains through a single-use, two-minute sign-in link.
+  which `spaces web` obtains through a single-use, two-minute sign-in link.
 
 Credentials are read from headers only — never from the query string, where
 they would end up in logs and histories. A multiuser session cookie or

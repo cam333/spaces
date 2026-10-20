@@ -46,8 +46,8 @@ pub const TIPS: &[&str] = &[
     "in Files, r refreshes the list; h and l, j and k move like vim",
     // Commands.
     "spaces --remote you@host runs your agents on another machine",
-    "spaces open shows these same agents in your browser, signed in",
-    "spaces open --remote you@host: the browser view of another machine",
+    "spaces web shows these same agents in your browser, signed in",
+    "spaces web --remote you@host: the browser view of another machine",
     "the browser view searches every past Claude, Codex and Gemini session",
     "the browser view's dashboard shows token use and cost by model",
     "on a phone, the browser view at /m has quick keys and voice input",

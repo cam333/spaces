@@ -193,18 +193,18 @@ if (cliFlags.help) {
   Spaces - Agent Workspace Manager
 
   Usage:
-    spaces                       Start the server (desktop mode by default)
-    spaces tui                   Launch the terminal client
+    spaces                       Open the terminal client, starting the server if needed
+    spaces tui                   The same, and never falls back to the browser
     spaces --remote you@host     The terminal client for Spaces on another machine,
                                  over SSH. Offers to install Spaces there, or to
                                  update it when it is older than this machine's
     spaces --remote you@host --yes
                                  The same, installing or updating without asking
-    spaces open --remote you@host
+    spaces web --remote you@host
                                  The web app for Spaces on another machine, in your
                                  browser, through an SSH tunnel (Ctrl+C closes it)
     spaces start                 Start the server in the background, if it is not running
-    spaces open                  Open the web app in your browser, signed in
+    spaces web                   Open the web app in your browser, signed in
     spaces signout               Sign out every browser and terminal client
     spaces stop                  Stop running server
     spaces restart               Restart the server (through the service, if installed)
@@ -247,11 +247,13 @@ if (cliFlags.help) {
 }
 
 // ─── Stop command ─────────────────────────────────────────
-const subcommand = args[0];
+// `spaces web` was the browser command before `spaces web`; it stays as
+// an alias, mapped here so nothing below has to know.
+const subcommand = args[0] === 'open' ? 'web' : args[0];
 // `--remote` means "the terminal client, over there". With any other command
 // it would be silently ignored and the command would run here instead.
-if (cliFlags.remote && subcommand && subcommand !== 'tui' && subcommand !== 'open' && !subcommand.startsWith('-')) {
-  console.error(`  --remote works with "spaces", "spaces tui" and "spaces open", not "spaces ${subcommand}".`);
+if (cliFlags.remote && subcommand && subcommand !== 'tui' && subcommand !== 'web' && !subcommand.startsWith('-')) {
+  console.error(`  --remote works with "spaces", "spaces tui" and "spaces web", not "spaces ${subcommand}".`);
   console.error(`  To run that on the other machine: ssh ${cliFlags.remote} spaces ${subcommand}`);
   process.exit(2);
 }
@@ -308,7 +310,7 @@ if (subcommand === 'service') {
 }
 
 // ─── Route tui to the platform terminal-client binary ─────
-if (subcommand === 'tui' || (cliFlags.remote && subcommand !== 'open')) {
+if (subcommand === 'tui' || (cliFlags.remote && subcommand !== 'web')) {
   // Explicit `spaces tui` never silently opens a browser: the user asked
   // for the terminal client by name, so a failure is reported as one. Bare
   // `spaces --remote host` asks for the same thing.
@@ -332,11 +334,11 @@ if (subcommand === 'signout') {
 }
 
 // ─── Open the web app, signed in / setup wizard / server ──
-if (subcommand === 'open' && cliFlags.remote) {
+if (subcommand === 'web' && cliFlags.remote) {
   // Waits for the tunnel on the event loop: part of this chain for the
   // same reason as `open` below.
   openRemote(cliFlags.remote);
-} else if (subcommand === 'open') {
+} else if (subcommand === 'web') {
   // Exits by itself: at once, or on Linux once the timer that removes the
   // sign-in redirect page fires. Part of this chain so it no longer falls
   // through to "Unknown command" while that timer is pending.
@@ -609,8 +611,8 @@ function startDetached(startArgs) {
     const session = desktopSessionToken();
     if (session) console.log(`SPACES_TOKEN=${session}`);
   }
-  // `spaces open --remote` asks for this: a browser sign-in code, the kind
-  // `spaces open` puts in its link (one use, two minutes), and the path the
+  // `spaces web --remote` asks for this: a browser sign-in code, the kind
+  // `spaces web` puts in its link (one use, two minutes), and the path the
   // web app is served under. The secret itself never leaves this machine.
   if (!multiuser && startArgs.includes('--print-login')) {
     if (!listenerIsMine(port)) refuseForeignListener(port);
@@ -706,7 +708,7 @@ function signInUrl(port, basePath, secret) {
 }
 
 /**
- * `spaces open`: starts the server if needed and opens the web app in the
+ * `spaces web`: starts the server if needed and opens the web app in the
  * browser, already signed in through a one-time link.
  */
 function openSignedIn() {
@@ -762,7 +764,7 @@ function signOutEverywhere() {
     console.log('  If Spaces runs as a service, restart the service too, so it picks up the new secret.');
   }
   console.log('  Signed out everywhere: every browser, terminal client and remote session.');
-  console.log('  Run "spaces open" or "spaces tui" to sign in again.');
+  console.log('  Run "spaces web" or "spaces tui" to sign in again.');
   process.exit(0);
 }
 
@@ -837,7 +839,7 @@ function launchRemote(dest, tuiArgs) {
 }
 
 /**
- * What `spaces --remote` and `spaces open --remote` share: Spaces running on
+ * What `spaces --remote` and `spaces web --remote` share: Spaces running on
  * `dest` (installed or updated first, with the user's say-so) and an SSH
  * tunnel to it from a local port. `login` also asks for a browser sign-in
  * code; `localPort` is tried before any free port. Returns what `spaces
@@ -963,7 +965,7 @@ function localPortIsFree(port) {
 }
 
 /**
- * `spaces open --remote <dest>`: the web app for Spaces on another machine.
+ * `spaces web --remote <dest>`: the web app for Spaces on another machine.
  * Connects as `spaces --remote` does, then signs the browser in through
  * the tunnel with a one-time code made over there, and keeps the tunnel up
  * until Ctrl+C.
@@ -1429,7 +1431,7 @@ function startServer() {
         if (!(isMultiuser ? openInBrowser(url) : openSignInLink(url))) {
           console.log(isMultiuser
             ? `  Open ${url} in your browser`
-            : '  Run "spaces open" to open Spaces in your browser, signed in.');
+            : '  Run "spaces web" to open Spaces in your browser, signed in.');
         }
       }
     }
@@ -1515,7 +1517,7 @@ function startServer() {
     const headers = { 'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer' };
     if (req.method !== 'GET' || !loginCodes.redeem(code)) {
       res.writeHead(401, { ...headers, 'Content-Type': 'text/plain; charset=utf-8' });
-      res.end('This sign-in link has expired or was already used. Run "spaces open" for a new one.');
+      res.end('This sign-in link has expired or was already used. Run "spaces web" for a new one.');
       return;
     }
     const session = desktopAuth.signDesktop(internalToken, 'session', desktopAuth.SESSION_TTL_S);

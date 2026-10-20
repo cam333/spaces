@@ -318,7 +318,7 @@ function parseStartBasePath(stdout) {
 }
 
 /**
- * The local port `spaces open --remote` tunnels from, the same each time for
+ * The local port `spaces web --remote` tunnels from, the same each time for
  * the same destination, so the address stays put in the browser's history.
  * Within 41000–41999; another is used when this one is taken.
  */

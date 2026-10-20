@@ -42,7 +42,7 @@ async function desktopGate(request: NextRequest, passThrough: () => NextResponse
 
   if (pathname.startsWith('/api/')) {
     return NextResponse.json(
-      { error: 'unauthorized', hint: 'Run "spaces open" on this machine to sign in.' },
+      { error: 'unauthorized', hint: 'Run "spaces web" on this machine to sign in.' },
       { status: 401 },
     );
   }
@@ -57,7 +57,7 @@ const LOCKED_PAGE = `<!doctype html><meta charset="utf-8"><meta name="viewport" 
 <style>body{font:15px/1.5 system-ui,sans-serif;background:#11111b;color:#cdd6f4;display:grid;place-items:center;min-height:100vh;margin:0}
 main{max-width:30rem;padding:2rem}b{color:#6366f1}code{background:#1e1e2e;padding:.15rem .4rem;border-radius:4px}</style>
 <main><p><b>&#9670; spaces</b></p><p>This browser is not signed in. In a terminal on this machine, run</p>
-<p><code>spaces open</code></p><p>and it will open Spaces here, signed in.</p></main>`;
+<p><code>spaces web</code></p><p>and it will open Spaces here, signed in.</p></main>`;
 
 function timingSafeEqualStr(a: string, b: string): boolean {
   const aBytes = new TextEncoder().encode(a);

@@ -24,7 +24,7 @@
  *   - The `spaces-desktop` cookie: the browser. A token signed with the
  *     secret, HttpOnly (no script reads it) and SameSite=Strict (no other
  *     site sends it). It is never the secret itself.
- *   - A login code, once: `spaces open` mints one and opens the browser on
+ *   - A login code, once: `spaces web` mints one and opens the browser on
  *     it; the server swaps it for the cookie. Single use, two minutes.
  *
  * And before any of that, the Host header must name this machine's loopback
@@ -149,7 +149,7 @@ function verifyDesktop(secret, token, kind, now = Math.floor(Date.now() / 1000))
 }
 
 /**
- * Login codes: minted by whoever holds the secret (`spaces open`, or the
+ * Login codes: minted by whoever holds the secret (`spaces web`, or the
  * server opening a browser itself), redeemed by the server exactly once.
  * The used-set only has to outlive a code's two minutes.
  */

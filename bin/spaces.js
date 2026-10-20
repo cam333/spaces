@@ -1365,7 +1365,8 @@ function startServer() {
       },
     });
   } else {
-    next = spawn('npx', ['next', 'start', '--port', String(NEXT_INTERNAL_PORT)], {
+    // One command line: a list of arguments to a shell draws Node's DEP0190.
+    next = spawn(`npx next start --port ${Number(NEXT_INTERNAL_PORT)}`, {
       cwd: projectDir,
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,

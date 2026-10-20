@@ -55,16 +55,17 @@ function samePlaceArgs() {
 }
 
 function run(cmd, args, opts = {}) {
-  const isWin = process.platform === 'win32';
-  const safeArgs = isWin
-    ? args.map(a => (a.includes(' ') ? '"' + a + '"' : a))
-    : args;
-  return execFileSync(cmd, safeArgs, {
+  const options = {
     encoding: 'utf-8',
     stdio: opts.quiet ? ['pipe', 'pipe', 'pipe'] : 'inherit',
-    shell: isWin,
     ...opts,
-  });
+  };
+  if (process.platform !== 'win32') return execFileSync(cmd, args, options);
+  // npm is a .cmd on Windows, which only runs through the shell. One
+  // command line rather than a list of arguments: Node warns (DEP0190)
+  // about passing a list to a shell, which joins it unescaped anyway.
+  const line = [cmd, ...args].map((a) => (/[\s&|<>^"]/.test(a) ? `"${a.replace(/"/g, '""')}"` : a)).join(' ');
+  return execFileSync(line, { ...options, shell: true });
 }
 
 function restartServiceIfRunning() {

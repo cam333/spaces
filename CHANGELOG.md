@@ -3,6 +3,11 @@
 All notable changes to Spaces are recorded here. The project follows
 [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+- `spaces upgrade` on Windows no longer prints Node's DEP0190 warning
+  about passing arguments to a shell.
+
 ## 1.0.8
 
 - `spaces upgrade` on Windows stopped with "EBUSY" while Spaces was

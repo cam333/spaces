@@ -3,8 +3,10 @@
 All notable changes to Spaces are recorded here. The project follows
 [Semantic Versioning](https://semver.org/).
 
-## Unreleased
+## 1.0.7
 
+- On Windows, starting Spaces opened a terminal window titled
+  "next-server". The server now runs with no window.
 - One-line installers: `curl -fsSL https://agentspaces.co/install.sh | sh`
   on macOS and Linux, `irm https://agentspaces.co/install.ps1 | iex` on
   Windows. They set up Node.js when it is missing, and the build tools on

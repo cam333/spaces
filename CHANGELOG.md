@@ -3,8 +3,12 @@
 All notable changes to Spaces are recorded here. The project follows
 [Semantic Versioning](https://semver.org/).
 
-## Unreleased
+## 1.0.9
 
+- `spaces web` opens the web app in your browser, signed in, and
+  `spaces web --remote you@host` does it for another machine. They replace
+  `spaces open`, which keeps working as an alias. `spaces` itself opens the
+  terminal client, as before; its help now says so.
 - `spaces upgrade` on Windows no longer prints Node's DEP0190 warning
   about passing arguments to a shell.
 

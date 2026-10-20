@@ -1,12 +1,24 @@
 // tests/lib/path-check.test.ts
 import { describe, it, expect } from 'vitest';
-import { globalBinDir, onPath, plan, thisTerminalLines } from '../../bin/lib/path-check.js';
+import { installPrefix, globalBinDir, onPath, plan, thisTerminalLines } from '../../bin/lib/path-check.js';
 
 // After `npm install -g`, `spaces` must run. When npm's command folder is not
 // on PATH the install says so, fixes the user PATH on Windows, and prints the
 // line that makes it work in the terminal that ran npm.
 
 const WIN_DIR = 'C:\\Users\\pat\\AppData\\Roaming\\npm';
+
+describe('installPrefix', () => {
+  it('reads the npm prefix from where the package sits', () => {
+    expect(installPrefix('C:\\Users\\pat\\AppData\\Roaming\\npm\\node_modules\\@jlongo78\\agent-spaces', 'win32'))
+      .toBe('C:\\Users\\pat\\AppData\\Roaming\\npm');
+    expect(installPrefix('/home/pat/.local/lib/node_modules/@jlongo78/agent-spaces', 'linux')).toBe('/home/pat/.local');
+  });
+
+  it('is null for a checkout', () => {
+    expect(installPrefix('/home/pat/src/agent-spaces', 'linux')).toBeNull();
+  });
+});
 
 describe('globalBinDir', () => {
   it('is the prefix on Windows and prefix/bin elsewhere', () => {

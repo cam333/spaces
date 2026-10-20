@@ -3,6 +3,20 @@
 All notable changes to Spaces are recorded here. The project follows
 [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+- One-line installers: `curl -fsSL https://agentspaces.co/install.sh | sh`
+  on macOS and Linux, `irm https://agentspaces.co/install.ps1 | iex` on
+  Windows. They set up Node.js when it is missing, and the build tools on
+  Linux, asking first.
+- `spaces upgrade` upgrades the copy you run, wherever it is installed: a
+  copy in `~/.local` (where `--remote` and the installer put Spaces when
+  npm's global folder needs root) no longer tries to write the root-owned
+  one.
+- `spaces upgrade` no longer stops a Spaces server you started yourself:
+  it restarts only a registered service, and otherwise says to run
+  `spaces restart`.
+
 ## 1.0.6
 
 - After `npm install -g`, `spaces` could be "not recognized" because npm's

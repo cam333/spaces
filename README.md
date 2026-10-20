@@ -55,6 +55,21 @@ reattach from somewhere else: it is the same session the whole time.
 
 ## Install
 
+macOS and Linux:
+
+```bash
+curl -fsSL https://agentspaces.co/install.sh | sh
+```
+
+Windows (PowerShell):
+
+```powershell
+irm https://agentspaces.co/install.ps1 | iex
+```
+
+The installers set up Node.js if you need it (and, on Linux, the build
+tools), asking first. With Node.js already installed, npm works too:
+
 ```bash
 npm install -g @jlongo78/agent-spaces
 ```

@@ -43,14 +43,7 @@ try {
 // SPACES_NO_PATH_FIX=1 reports without changing the user's PATH.
 try {
   const pc = require('./lib/path-check');
-  // The package is <global node_modules>/@jlongo78/agent-spaces, and the
-  // global node_modules is <prefix>/node_modules on Windows and
-  // <prefix>/lib/node_modules elsewhere.
-  const globalModules = path.resolve(__dirname, '..', '..', '..');
-  const derived = path.basename(globalModules) === 'node_modules'
-    ? (process.platform === 'win32' ? path.dirname(globalModules) : path.dirname(path.dirname(globalModules)))
-    : null;
-  const dir = pc.globalBinDir(derived || process.env.npm_config_prefix);
+  const dir = pc.globalBinDir(pc.installPrefix(path.join(__dirname, '..')) || process.env.npm_config_prefix);
   const isWin = process.platform === 'win32';
   const terminalPath = process.env.PATH || process.env.Path || '';
   const needs = dir && !pc.onPath(dir, terminalPath);
@@ -65,7 +58,11 @@ try {
     const lines = todo.addToUserPath && !added
       ? todo.lines.map((l) => l.startsWith('Added ') ? `"spaces" is in ${dir}, which is not on your PATH.` : l)
       : todo.lines;
-    pc.sayToTerminal(`\n  Spaces is installed.\n${lines.map((l) => `  ${l}`).join('\n')}\n\n`);
+    // The install scripts on agentspaces.co set this: they put the folder
+    // on the window's PATH themselves and say so.
+    if (!process.env.SPACES_INSTALLER) {
+      pc.sayToTerminal(`\n  Spaces is installed.\n${lines.map((l) => `  ${l}`).join('\n')}\n\n`);
+    }
   }
 } catch {
   // Advice only: an install never fails over it.

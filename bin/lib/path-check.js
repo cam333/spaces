@@ -15,6 +15,18 @@ const fs = require('fs');
 const path = require('path');
 const { execFileSync } = require('child_process');
 
+/**
+ * The npm prefix this package was installed under, from where it sits:
+ * `<prefix>/node_modules/@jlongo78/agent-spaces` on Windows,
+ * `<prefix>/lib/node_modules/...` elsewhere. Null for a checkout or a link.
+ */
+function installPrefix(packageRoot, platform = process.platform) {
+  const p = platform === 'win32' ? path.win32 : path.posix;
+  const globalModules = p.resolve(packageRoot, '..', '..');
+  if (p.basename(globalModules) !== 'node_modules') return null;
+  return platform === 'win32' ? p.dirname(globalModules) : p.dirname(p.dirname(globalModules));
+}
+
 /** Where npm put the `spaces` command for a global install under `prefix`. */
 function globalBinDir(prefix, platform = process.platform) {
   if (!prefix) return null;
@@ -128,4 +140,4 @@ function sayToTerminal(text, platform = process.platform) {
   }
 }
 
-module.exports = { globalBinDir, onPath, readUserPath, addToUserPath, thisTerminalLines, plan, sayToTerminal };
+module.exports = { installPrefix, globalBinDir, onPath, readUserPath, addToUserPath, thisTerminalLines, plan, sayToTerminal };

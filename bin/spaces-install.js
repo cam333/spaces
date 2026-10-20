@@ -36,6 +36,24 @@ function logOk(msg) { console.log(`  ✓ ${msg}`); }
 function logErr(msg) { console.error(`  ✗ ${msg}`); }
 function logWarn(msg) { console.log(`  ! ${msg}`); }
 
+/**
+ * `--prefix` for npm when this copy was installed somewhere other than
+ * npm's global folder — ~/.local, where `spaces --remote` and the install
+ * script put it when that folder needs root — so an upgrade replaces this
+ * copy instead of failing to write the root-owned one.
+ */
+function samePlaceArgs() {
+  const { installPrefix } = require('./lib/path-check');
+  const here = installPrefix(path.join(__dirname, '..'));
+  if (!here) return [];
+  let globalPrefix = '';
+  try { globalPrefix = String(run('npm', ['prefix', '-g'], { quiet: true })).trim(); } catch { /* use ours */ }
+  const same = (a, b) => process.platform === 'win32'
+    ? path.resolve(a).toLowerCase() === path.resolve(b).toLowerCase()
+    : path.resolve(a) === path.resolve(b);
+  return globalPrefix && same(here, globalPrefix) ? [] : ['--prefix', here];
+}
+
 function run(cmd, args, opts = {}) {
   const isWin = process.platform === 'win32';
   const safeArgs = isWin
@@ -50,6 +68,14 @@ function run(cmd, args, opts = {}) {
 }
 
 function restartServiceIfRunning() {
+  // Only through a registered service: `spaces service stop` kills the
+  // processes on the Spaces ports, so with no service it would take down a
+  // server started by hand and start nothing in its place.
+  const { serviceInstalled } = require('./lib/service-registration');
+  if (!serviceInstalled()) {
+    log('If Spaces is running, "spaces restart" puts the new version in charge.');
+    return;
+  }
   const serviceScript = path.join(__dirname, 'spaces-service.js');
   try {
     log('Restarting service...');
@@ -86,7 +112,7 @@ function upgradeCorePackage() {
 
   log(`Upgrading ${CORE_PACKAGE}: ${currentVersion} → ${latestVersion}`);
   try {
-    run('npm', ['install', '-g', `${CORE_PACKAGE}@latest`]);
+    run('npm', ['install', '-g', ...samePlaceArgs(), `${CORE_PACKAGE}@latest`]);
     logOk(`${CORE_PACKAGE} upgraded to ${latestVersion}`);
   } catch (err) {
     logErr(`Failed to upgrade ${CORE_PACKAGE}: ${err.message}`);

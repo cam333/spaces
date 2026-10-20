@@ -3,7 +3,7 @@
 All notable changes to Spaces are recorded here. The project follows
 [Semantic Versioning](https://semver.org/).
 
-## Unreleased
+## 1.0.8
 
 - `spaces upgrade` on Windows stopped with "EBUSY" while Spaces was
   running, since Windows will not replace a running program's files. It now

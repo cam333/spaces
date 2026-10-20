@@ -3,6 +3,16 @@
 All notable changes to Spaces are recorded here. The project follows
 [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+- `spaces upgrade` on Windows stopped with "EBUSY" while Spaces was
+  running, since Windows will not replace a running program's files. It now
+  says what is running, asks (or `--yes`), stops the server and any open
+  terminal client, updates, and starts the server again. It refuses from a
+  shell inside a Spaces pane, which the stop would end.
+- `spaces uninstall` stops a running Spaces first, and says so when npm
+  could not remove it instead of reporting it already gone.
+
 ## 1.0.7
 
 - On Windows, starting Spaces opened a terminal window titled

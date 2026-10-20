@@ -113,7 +113,7 @@ function findGitBash() {
     if (p && fs.existsSync(p)) return p;
   }
   try {
-    const result = require('child_process').execSync('where bash.exe 2>nul', { encoding: 'utf-8', timeout: 3000 });
+    const result = require('child_process').execSync('where bash.exe 2>nul', { encoding: 'utf-8', timeout: 3000, windowsHide: true });
     const first = result.trim().split('\n')[0].trim();
     if (first && first.toLowerCase().includes('git') && fs.existsSync(first)) return first;
   } catch { /* not found */ }
@@ -132,7 +132,7 @@ function findSshBinary() {
   const gitSSH = 'C:\\Program Files\\Git\\usr\\bin\\ssh.exe';
   if (fs.existsSync(gitSSH)) return gitSSH;
   try {
-    const result = require('child_process').execSync('where ssh.exe 2>nul', { encoding: 'utf-8', timeout: 3000 });
+    const result = require('child_process').execSync('where ssh.exe 2>nul', { encoding: 'utf-8', timeout: 3000, windowsHide: true });
     const first = result.trim().split('\n')[0].trim();
     if (first && fs.existsSync(first)) return first;
   } catch { /* not found */ }

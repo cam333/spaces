@@ -6,7 +6,9 @@ if (!process.execArgv.some(a => a.includes('max-old-space-size')) && !process.en
   require('child_process').spawn(
     process.execPath,
     ['--max-old-space-size=8192', ...process.argv.slice(1)],
-    { stdio: 'inherit', env: process.env }
+    // No window of its own: under `spaces` the server runs detached, with
+    // no console to share, and Windows would open one.
+    { stdio: 'inherit', env: process.env, windowsHide: true }
   ).on('exit', (code) => process.exit(code ?? 1));
   // Stop the outer process from continuing
   return;
@@ -426,17 +428,21 @@ function startBackgroundServer(port, serverArgs = []) {
   const { portIsListening, waitForServer, tailLines } = require('./spaces-tui');
   console.log(`  Starting the Spaces server on port ${port} in the background...`);
   const env = { ...process.env, SPACES_SERVICE: '1' };
-  delete env.__SPACES_HEAP;
+  // The heap flag here, so the server does not relaunch itself for it.
+  env.__SPACES_HEAP = '1';
   // Its output goes to a log rather than nowhere, so a server that fails to
   // start can say why.
   fs.mkdirSync(SPACES_DIR, { recursive: true });
   const logPath = path.join(SPACES_DIR, 'server.log');
   const log = fs.openSync(logPath, 'w');
   // `--port` last so the resolved port wins over any the user passed.
-  const child = spawn(process.execPath, [__filename, ...serverArgs, '--port', String(port)], {
+  // Detached, so it outlives this command; hidden, or Windows gives the
+  // console-less server, and everything it starts, a window of its own.
+  const child = spawn(process.execPath, ['--max-old-space-size=8192', __filename, ...serverArgs, '--port', String(port)], {
     detached: true,
     stdio: ['ignore', log, log],
     env,
+    windowsHide: true,
   });
   fs.closeSync(log);
   child.unref();
@@ -1350,6 +1356,7 @@ function startServer() {
     next = spawn(process.execPath, [standaloneServer], {
       cwd: path.dirname(standaloneServer),
       stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true,
       env: {
         ...childEnv,
         PORT: String(NEXT_INTERNAL_PORT),
@@ -1361,6 +1368,7 @@ function startServer() {
     next = spawn('npx', ['next', 'start', '--port', String(NEXT_INTERNAL_PORT)], {
       cwd: projectDir,
       stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true,
       env: {
         ...childEnv,
         PORT: String(NEXT_INTERNAL_PORT),

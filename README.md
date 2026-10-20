@@ -1,23 +1,16 @@
 <p align="center">
-  <img src="public/spaces_logo.png" alt="Spaces" width="420" />
+  <img src="public/spaces_logo.png" alt="Spaces" width="240" />
 </p>
 
-<h3 align="center">A terminal workspace for your coding agents.<br/>Run them side by side, see which one needs you, and pick up where you left off, in your terminal or your browser.</h3>
+<h3 align="center">Run your coding agents side by side, see which one needs you,<br/>and pick them up from your terminal, browser or phone.</h3>
 
 <p align="center">
-  <a href="#install">Install</a> &middot;
-  <a href="#quick-start">Quick start</a> &middot;
-  <a href="#the-terminal-client">Terminal client</a> &middot;
-  <a href="#the-web-app">Web app</a> &middot;
-  <a href="#security">Security</a> &middot;
-  <a href="docs/getting-started.md">Docs</a>
+  Claude Code, Codex, Gemini CLI and more, on your machine or a server you reach over SSH. Open source, no telemetry.
 </p>
 
 <p align="center">
   <a href="https://www.npmjs.com/package/@jlongo78/agent-spaces"><img src="https://img.shields.io/npm/v/@jlongo78/agent-spaces?style=flat-square&color=cb3837" alt="npm" /></a>
-  <a href="https://github.com/jlongo78/spaces/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/jlongo78/spaces/ci.yml?style=flat-square&label=CI" alt="CI" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue?style=flat-square" alt="Apache-2.0 License" /></a>
-  <img src="https://img.shields.io/badge/node-%3E%3D20.9-brightgreen?style=flat-square" alt="Node 20.9+" />
   <img src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey?style=flat-square" alt="Platforms" />
 </p>
 
@@ -25,33 +18,40 @@
   <img src="docs/images/terminal-client.gif" alt="The Spaces terminal client: Claude Code and Codex working in two spaces, split side by side; Codex stops to ask for approval, gets it from the menu, then the Files tab, a detach and a reattach" width="900" />
 </p>
 
-<p align="center"><sub>Recorded live: Claude Code and Codex working on a small app in two spaces. Nothing is staged except the prompts.</sub></p>
+<p align="center"><sub>Recorded live: Claude Code and Codex working on a small app. Nothing is staged except the prompts.</sub></p>
 
----
+```bash
+curl -fsSL https://agentspaces.co/install.sh | sh     # macOS, Linux
+irm https://agentspaces.co/install.ps1 | iex          # Windows (PowerShell)
+```
+
+<p align="center">
+  <a href="#install">Install</a> &middot;
+  <a href="#quick-start">Quick start</a> &middot;
+  <a href="#on-another-machine">On a server</a> &middot;
+  <a href="#the-terminal-client">Terminal client</a> &middot;
+  <a href="#the-web-app">Web app</a> &middot;
+  <a href="#security">Security</a> &middot;
+  <a href="https://agentspaces.co">Website</a>
+</p>
 
 ## What is Spaces?
 
-Running one AI coding agent is easy. Running five is a mess of terminal tabs,
-and the moment you look away you lose track of which one finished, which one
-is waiting on you, and which one is still working.
+Five agents in five terminal tabs is a mess: look away and you lose track of
+which one finished and which one is waiting on you. Spaces keeps them in
+named, persistent workspaces and fixes that:
 
-**Spaces** is a small server on your machine that keeps your agents in
-named, persistent workspaces ("spaces"). Every pane is a real terminal that
-keeps running whether or not anything is looking at it. Spaces watches each
-agent and tells you which one is working (`◐`), done (`✓`) or blocked
-waiting for you (`×`).
+- **It knows who needs you.** Every agent shows as working (`◐`), done
+  (`✓`) or blocked waiting for you (`×`), and the one that stops tells you.
+- **The same live agents, wherever you are.** The terminal client
+  (`spaces`), the web app (`spaces open`) and a phone layout are views of
+  the same running sessions. Detach, and they keep going.
+- **One command puts it on a server.** `spaces --remote you@box` installs
+  Spaces there, sets up your SSH key and connects. Nothing is exposed
+  beyond SSH.
 
-You reach the same live agents two ways:
-
-- **The terminal client**, `spaces`: a sidebar of spaces and agents, tabs,
-  a split view, a file browser and editor. It runs anywhere you have a
-  terminal, including over SSH, and `spaces --remote you@devbox` drives
-  Spaces on another machine from your laptop.
-- **The web app**, `spaces open`: the same spaces as a grid of browser
-  terminals, plus session history, search and usage dashboards.
-
-Start an agent in the terminal, check on it from the browser, detach, and
-reattach from somewhere else: it is the same session the whole time.
+Claude Code panes come back in the same conversation after a restart, and
+every past Claude Code, Codex, Gemini CLI and Aider session is searchable.
 
 ## Install
 

@@ -3,7 +3,7 @@
 All notable changes to Spaces are recorded here. The project follows
 [Semantic Versioning](https://semver.org/).
 
-## Unreleased
+## 1.0.6
 
 - After `npm install -g`, `spaces` could be "not recognized" because npm's
   command folder was not on `PATH`. The install now checks: on Windows it

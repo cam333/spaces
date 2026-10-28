@@ -1081,6 +1081,18 @@ fn dispatch_command(cmd: Command, palette: &mut Palette, model: &Model) -> Actio
             palette.picking_color = Some(workspace_id);
             Action::Redraw
         }
+        Command::PickTheme => {
+            open_prompt(palette, String::new());
+            palette.picking_theme = true;
+            // Start on the chosen theme, so opening the picker changes
+            // nothing on screen until the selection moves.
+            let chosen = crate::ui::theme::current_name();
+            palette.selected = crate::ui::theme::THEMES
+                .iter()
+                .position(|(name, _)| *name == chosen)
+                .unwrap_or(0);
+            Action::Redraw
+        }
         Command::RenamePane { pane_id } => {
             // Pre-filled with whatever the pane is called now — which may be
             // the shell's own OSC title, and editing that into something
@@ -1207,6 +1219,7 @@ fn open_prompt(palette: &mut Palette, seed: String) {
     palette.picking_color = None;
     palette.renaming_pane = None;
     palette.picking_pane_color = None;
+    palette.picking_theme = false;
     palette.tab_menu = None;
     palette.selection = None;
     palette.picking_session = None;
@@ -1229,6 +1242,7 @@ fn close_palette(palette: &mut Palette) {
     palette.renaming_pane = None;
     palette.picking_pane_color = None;
     palette.picking_session = None;
+    palette.picking_theme = false;
     // The overlays are mutually exclusive: whichever one the user is opening
     // or closing, the others must not be left behind on screen.
     palette.tab_menu = None;
@@ -1322,6 +1336,66 @@ mod tests {
 
     fn key(code: KeyCode, mods: KeyModifiers) -> KeyEvent {
         KeyEvent::new(code, mods)
+    }
+
+    /// Opens the theme picker the way a user does: `ctrl+k`, type "theme",
+    /// enter.
+    fn open_theme_picker(m: &Model) -> Palette {
+        let mut p = Palette::default();
+        p.open = true;
+        p.query = "theme".into();
+        let action = route(key(KeyCode::Enter, KeyModifiers::NONE), &mut p, None, m);
+        assert!(matches!(action, Action::Redraw), "{action:?}");
+        assert!(p.open && p.picking_theme, "the picker is open");
+        p
+    }
+
+    #[test]
+    fn the_theme_picker_starts_on_the_chosen_theme_and_previews_the_selection() {
+        let m = Model::default();
+        let mut p = open_theme_picker(&m);
+        let chosen = crate::ui::theme::current_name();
+        assert_eq!(
+            crate::ui::palette::previewed_theme(&m, &p).as_deref(),
+            Some(chosen),
+            "opening the picker changes nothing on screen"
+        );
+        route(key(KeyCode::Down, KeyModifiers::NONE), &mut p, None, &m);
+        let next = crate::ui::palette::previewed_theme(&m, &p).expect("a theme is selected");
+        assert_ne!(next, chosen, "moving the selection previews another theme");
+        let action = route(key(KeyCode::Enter, KeyModifiers::NONE), &mut p, None, &m);
+        assert!(
+            matches!(&action, Action::Command(Command::SetTheme(name)) if *name == next),
+            "{action:?}"
+        );
+        assert!(!p.open && !p.picking_theme);
+    }
+
+    #[test]
+    fn escape_leaves_the_theme_picker_without_choosing() {
+        let m = Model::default();
+        let mut p = open_theme_picker(&m);
+        route(key(KeyCode::Down, KeyModifiers::NONE), &mut p, None, &m);
+        let action = route(key(KeyCode::Esc, KeyModifiers::NONE), &mut p, None, &m);
+        assert!(matches!(action, Action::Redraw), "{action:?}");
+        assert!(!p.picking_theme);
+        assert_eq!(crate::ui::palette::previewed_theme(&m, &p), None);
+    }
+
+    #[test]
+    fn the_theme_picker_filters_by_name_and_marks_the_chosen_one() {
+        let all = crate::ui::palette::theme_candidates("");
+        assert_eq!(all.len(), crate::ui::theme::THEMES.len());
+        let chosen = crate::ui::theme::current_name();
+        let marked: Vec<_> = all
+            .iter()
+            .filter(|(l, _)| l.ends_with(" (current)"))
+            .collect();
+        assert_eq!(marked.len(), 1);
+        assert!(marked[0].0.starts_with(chosen));
+        let light = crate::ui::palette::theme_candidates("LIGHT");
+        assert!(!light.is_empty());
+        assert!(light.iter().all(|(l, _)| l.contains("light")), "{light:?}");
     }
 
     fn one_pane_model(id: &str) -> Model {

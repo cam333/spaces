@@ -638,13 +638,47 @@ Every pane's runtime state record under this workspace is also dropped
 entirely, so neither the workspace nor its panes are resurrected as a
 nameless stub by a later `session.snapshot` — see that method's note above.
 
+The same transaction remembers the workspace in the runtime's own
+`closed_workspaces` table: its name, color, and each pane's agent, folder,
+title and Claude conversation, in tab order. So a close either deletes and
+remembers, or does neither. See `workspace.closedList`. A workspace the web
+app deletes itself is not remembered.
+
 - **Params:** `workspaceId` (string, **required**, `"wN"` form).
-- **Result:** `{ ok: true, closedPanes: string[] }` (every pane id that was
-  actually torn down).
-- **Emits:** `workspace.removed` (payload: `{ workspaceId, closedPanes }`).
+- **Result:** `{ ok: true, closedPanes: string[], closedKey: string }`
+  (every pane id that was actually torn down, and the key of the record
+  that remembers the workspace).
+- **Emits:** `workspace.removed` (payload: `{ workspaceId, closedPanes, closedKey }`).
 - **Errors:** `bad_request` (malformed workspaceId), `not_found` (no such
   workspace — e.g. it was already deleted out-of-band by the web app, which
   shares the same `spaces.db`), `internal` (DB failure).
+
+### `workspace.closedList`
+
+Every workspace closed on this machine through `workspace.close`, newest
+first, so a client can offer one back. There is no cap: a record stays until
+a client forgets it.
+
+- **Params:** none.
+- **Result:** `{ closed: [{ key, name, color, closedAt, tabs: [{ agentType,
+  cwd, title, claudeSessionId }] }] }`. `closedAt` is an ISO 8601 time;
+  `color`, `cwd`, `title` and `claudeSessionId` may be null.
+- **Errors:** `internal` (DB unavailable).
+
+Reopening is the client's: `workspace.create` with the record's name and
+color, `pane.create` per tab in its folder (with `agentSession` set to the
+tab's `claudeSessionId` to resume that conversation, when its transcript is
+still there), then `workspace.closedForget` with the record's key.
+
+### `workspace.closedForget`
+
+Forgets one closed workspace: once a client has reopened it, or the user
+removed it from the list.
+
+- **Params:** `key` (string, **required**).
+- **Result:** `{ ok: true }`.
+- **Errors:** `bad_request` (missing key), `not_found` (no such record),
+  `internal` (DB failure).
 
 ### `agent.start`
 

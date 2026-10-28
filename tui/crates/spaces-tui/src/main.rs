@@ -1684,6 +1684,12 @@ fn intercept_local(action: Action, model: &mut Model) -> Action {
             model.set_tips(on, Instant::now());
             Action::Redraw
         }
+        Action::Command(Command::SetTheme(name)) => {
+            if let Some(chosen) = ui::theme::choose(&name) {
+                ui::theme::save(chosen);
+            }
+            Action::Redraw
+        }
         Action::Command(Command::ShowFiles) => {
             if model.files_shown.is_none() {
                 model.files_shown = Some(files::FilesLayout::Full);
@@ -1961,6 +1967,8 @@ async fn run(args: Args) -> Result<(), String> {
     // A tip for this start, unless this machine turned them off.
     let tips_on = tips::enabled();
     model.set_tips(tips_on, Instant::now());
+    // This machine's theme, or the default one.
+    ui::theme::choose(ui::theme::saved());
 
     let guard =
         TerminalGuard::enter().map_err(|e| format!("failed to prepare the terminal: {e}"))?;
@@ -3026,7 +3034,9 @@ async fn handle_command(cmd: Command, client: &mut ControlClient, ctx: &mut Pane
         | Command::ToggleMouse
         | Command::ToggleAgentSort
         | Command::ToggleSidebar
-        | Command::ToggleTips => {}
+        | Command::ToggleTips
+        | Command::PickTheme
+        | Command::SetTheme(_) => {}
         Command::CreatePaneWithSession {
             workspace_id,
             agent_type,

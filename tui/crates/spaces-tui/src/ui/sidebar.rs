@@ -425,15 +425,17 @@ pub fn state_icon(state: DisplayState) -> char {
     }
 }
 
-/// The conventional color for each state. Indexed ANSI rather than RGB so it
-/// follows whatever palette the user's terminal is themed with.
+/// The conventional color for each state, from the current theme. In the
+/// `terminal` theme these are indexed ANSI colours, which follow whatever
+/// palette the user's terminal is themed with.
 pub(crate) fn state_color(state: DisplayState) -> Color {
+    let t = super::theme::current();
     match state {
-        DisplayState::Blocked => Color::Red,
-        DisplayState::Working => Color::Yellow,
-        DisplayState::Done => Color::Cyan,
-        DisplayState::Idle => Color::Green,
-        DisplayState::Unknown => Color::DarkGray,
+        DisplayState::Blocked => t.red,
+        DisplayState::Working => t.yellow,
+        DisplayState::Done => t.teal,
+        DisplayState::Idle => t.green,
+        DisplayState::Unknown => t.overlay0,
     }
 }
 
@@ -783,7 +785,11 @@ fn contains(rect: Rect, column: u16, row: u16) -> bool {
 /// the same function.
 pub fn render_sidebar(model: &Model, area: Rect, buf: &mut Buffer) {
     let layout = sidebar_layout(area, model);
-    let dim = Style::default().fg(Color::DarkGray);
+    let t = super::theme::current();
+    if t.sidebar_bg != Color::Reset {
+        buf.set_style(area.intersection(buf.area), Style::new().bg(t.sidebar_bg));
+    }
+    let dim = Style::default().fg(t.overlay0);
     let header = dim.add_modifier(Modifier::BOLD);
 
     draw(
@@ -827,6 +833,7 @@ fn render_spaces(model: &Model, layout: &SidebarLayout, buf: &mut Buffer) {
     if body.width == 0 || body.height == 0 {
         return;
     }
+    let t = super::theme::current();
     let rows = sidebar_rows(model);
     let heights = space_heights(&rows);
     let scroll = clamp_scroll_rows(model.sidebar_scroll, &heights, body.height);
@@ -845,10 +852,19 @@ fn render_spaces(model: &Model, layout: &SidebarLayout, buf: &mut Buffer) {
                 let name: String = text.chars().skip(2).collect();
                 let mut name_style = match space.accent {
                     Some(color) => Style::default().fg(color),
-                    None => Style::default(),
+                    None => Style::default().fg(t.text),
                 };
                 if space.active {
                     name_style = name_style.add_modifier(Modifier::BOLD);
+                    // The active space's whole entry sits on the row
+                    // background, as herdr marks its active workspace.
+                    if t.active_row_bg != Color::Reset {
+                        let rows = shown.min(2);
+                        buf.set_style(
+                            Rect::new(body.x, y, body.width, rows).intersection(buf.area),
+                            Style::new().bg(t.active_row_bg),
+                        );
+                    }
                 }
                 let line = Line::from(vec![
                     Span::styled(icon, Style::default().fg(state_color(space.state))),
@@ -862,7 +878,7 @@ fn render_spaces(model: &Model, layout: &SidebarLayout, buf: &mut Buffer) {
                         draw(
                             buf,
                             Rect::new(body.x, y.saturating_add(1), body.width, 1),
-                            Line::styled(git, Style::default().fg(Color::DarkGray)),
+                            Line::styled(git, Style::default().fg(t.mauve)),
                         );
                     }
                 }
@@ -878,6 +894,7 @@ fn render_agents(model: &Model, layout: &SidebarLayout, buf: &mut Buffer) {
     if body.width == 0 || body.height == 0 {
         return;
     }
+    let t = super::theme::current();
     let rows = agent_rows(model);
     let scroll = clamp_scroll(
         model.agents_scroll,
@@ -894,6 +911,12 @@ fn render_agents(model: &Model, layout: &SidebarLayout, buf: &mut Buffer) {
         let mut head = Style::default().fg(state_color(agent.state));
         if agent.focused {
             head = head.add_modifier(Modifier::BOLD);
+            if t.active_row_bg != Color::Reset {
+                buf.set_style(
+                    Rect::new(body.x, y, body.width, AGENT_ENTRY_ROWS).intersection(buf.area),
+                    Style::new().bg(t.active_row_bg),
+                );
+            }
         }
         draw(
             buf,
@@ -909,7 +932,7 @@ fn render_agents(model: &Model, layout: &SidebarLayout, buf: &mut Buffer) {
             Rect::new(body.x, y.saturating_add(1), body.width, 1),
             Line::styled(
                 second,
-                Style::default().fg(agent.accent.unwrap_or(Color::DarkGray)),
+                Style::default().fg(agent.accent.unwrap_or(t.overlay0)),
             ),
         );
     }

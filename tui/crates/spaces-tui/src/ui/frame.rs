@@ -19,7 +19,7 @@ use std::collections::HashMap;
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Layout, Position, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::widgets::{Paragraph, Widget};
 use ratatui::Frame;
 
@@ -272,6 +272,10 @@ pub fn render(model: &Model, terms: &HashMap<String, PaneTerm>, palette: &Palett
         return;
     }
 
+    // While the theme picker is open the whole screen shows the selected
+    // theme; anything else shows the chosen one.
+    super::theme::preview(super::palette::previewed_theme(model, palette).as_deref());
+
     let sidebar_width = model.sidebar.columns(area.width);
     let (sidebar_area, tab_area, pane_area, status_area) = regions(area, sidebar_width);
 
@@ -371,7 +375,7 @@ fn render_edge(area: Rect, buf: &mut Buffer) {
     for row in area.y..area.y.saturating_add(area.height) {
         buf[(area.x, row)]
             .set_symbol("\u{2502}")
-            .set_style(Style::new().fg(Color::DarkGray));
+            .set_style(Style::new().fg(super::theme::current().surface1));
     }
 }
 
@@ -435,6 +439,15 @@ fn render_status_bar(model: &Model, area: Rect, buf: &mut Buffer) {
         return;
     }
 
+    let t = super::theme::current();
+    // The bar sits on the panel colour, its text in the theme's own colours;
+    // `terminal` leaves both to the terminal, as before themes.
+    let (text_style, hint_style) = if t.is_terminal() {
+        (Style::new(), Style::new())
+    } else {
+        buf.set_style(area.intersection(buf.area), Style::new().bg(t.panel_bg));
+        (Style::new().fg(t.subtext0), Style::new().fg(t.overlay0))
+    };
     let (blocked, working, done) = model.counts();
     let tally = format!("{blocked} blocked \u{b7} {working} working \u{b7} {done} done");
     let left = if model.local().stale {
@@ -484,7 +497,9 @@ fn render_status_bar(model: &Model, area: Rect, buf: &mut Buffer) {
         }
         _ => left,
     };
-    Paragraph::new(left).render(text_area, buf);
+    Paragraph::new(left)
+        .style(text_style)
+        .render(text_area, buf);
 
     if let Some(hint_x) = area
         .width
@@ -492,7 +507,10 @@ fn render_status_bar(model: &Model, area: Rect, buf: &mut Buffer) {
         .and_then(|offset| area.x.checked_add(offset))
     {
         let hint_area = Rect::new(hint_x, area.y, hint_width, area.height);
-        Paragraph::new(hint).right_aligned().render(hint_area, buf);
+        Paragraph::new(hint)
+            .style(hint_style)
+            .right_aligned()
+            .render(hint_area, buf);
     }
 }
 

@@ -23,7 +23,7 @@
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::Line;
 use ratatui::widgets::{Paragraph, Widget};
 
@@ -111,7 +111,7 @@ pub fn render_toasts(model: &Model, pane_area: Rect, buf: &mut Buffer) {
             .take(usize::from(rect.width))
             .collect();
         let style = Style::default()
-            .fg(Color::Black)
+            .fg(super::theme::current().ink())
             .bg(state_color(toast.state))
             .add_modifier(Modifier::BOLD);
         Paragraph::new(Line::styled(text, style)).render(rect, buf);
@@ -121,6 +121,7 @@ pub fn render_toasts(model: &Model, pane_area: Rect, buf: &mut Buffer) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ratatui::style::Color;
     use std::time::Instant;
 
     const AREA: Rect = Rect {

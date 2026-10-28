@@ -27,7 +27,7 @@
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Position, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Widget};
 
@@ -99,6 +99,9 @@ const RENAME_TITLE: &str = " rename space: edit the name, then enter ";
 
 /// Border title while [`Palette::picking_color`] is set.
 const COLOR_TITLE: &str = " color: pick one ";
+
+/// Border title while [`Palette::picking_theme`] is set.
+const THEME_TITLE: &str = " theme: move to preview, enter to keep ";
 
 /// Border title while [`Palette::renaming_pane`] is set.
 const PANE_RENAME_TITLE: &str = " rename pane: edit the name, then enter ";
@@ -220,6 +223,9 @@ pub struct Palette {
     pub renaming_pane: Option<String>,
     /// The pane being recolored.
     pub picking_pane_color: Option<String>,
+    /// The palette is the theme picker. The selected row is previewed live
+    /// (see [`previewed_theme`]); `enter` keeps it, `esc` goes back.
+    pub picking_theme: bool,
 }
 
 /// `true` iff creating a pane in `workspace_id` should ask for a directory
@@ -423,6 +429,12 @@ pub enum Command {
     /// Turn the tips shown at start off for this machine, or back on — see
     /// `crate::tips`. Local, like [`Command::ToggleSidebar`].
     ToggleTips,
+    /// Open the theme picker. Intercepted by `input`, like
+    /// [`Command::PickSpaceColor`]: it asks the user, not the server.
+    PickTheme,
+    /// Use the theme with this name and save it for this machine — see
+    /// [`super::theme`]. Local.
+    SetTheme(String),
     /// Create a pane whose session choice has already been made.
     ///
     /// Distinct from [`Command::CreatePane`], which is what *triggers* the
@@ -913,6 +925,11 @@ fn view_entries(model: &Model) -> Vec<Entry> {
             Command::ToggleTips,
         )
         .keywords("tips hints help"),
+        Entry::new(
+            format!("Theme: {}\u{2026}", super::theme::current_name()),
+            Command::PickTheme,
+        )
+        .keywords("theme colors colours palette look dark light"),
     ]
     .into_iter()
     .map(|e| e.in_group(Group::View))
@@ -1046,6 +1063,9 @@ fn mode_candidates(model: &Model, palette: &Palette) -> Option<Vec<(String, Comm
     }
     if let Some(workspace_id) = palette.picking_color.as_deref() {
         return Some(color_candidates(model, workspace_id, &palette.query));
+    }
+    if palette.picking_theme {
+        return Some(theme_candidates(&palette.query));
     }
     if let Some(workspace_id) = palette.renaming_space.as_deref() {
         return Some(rename_candidates(workspace_id, &palette.query));
@@ -1291,6 +1311,37 @@ fn color_candidates(model: &Model, workspace_id: &str, query: &str) -> Vec<(Stri
         name: None,
         color: Some(hex.to_string()),
     })
+}
+
+/// The theme picker's rows: every built-in theme whose name contains
+/// `query`, the chosen one marked.
+pub fn theme_candidates(query: &str) -> Vec<(String, Command)> {
+    let lowered = query.trim().to_lowercase();
+    let chosen = super::theme::current_name();
+    super::theme::THEMES
+        .iter()
+        .filter(|(name, _)| name.contains(&lowered))
+        .map(|(name, _)| {
+            let mark = if *name == chosen { " (current)" } else { "" };
+            (format!("{name}{mark}"), Command::SetTheme(name.to_string()))
+        })
+        .collect()
+}
+
+/// The theme to show while the picker is open: the selected row's, so moving
+/// through the list previews each theme on the whole screen. `None` when the
+/// picker is closed or nothing is selected.
+pub fn previewed_theme(model: &Model, palette: &Palette) -> Option<String> {
+    if !palette.open || !palette.picking_theme {
+        return None;
+    }
+    match visible_candidates(model, palette)
+        .into_iter()
+        .nth(palette.selected)
+    {
+        Some((_, Command::SetTheme(name))) => Some(name),
+        _ => None,
+    }
 }
 
 /// The color list both pickers draw: every entry in
@@ -1572,14 +1623,20 @@ pub fn render_palette(
     let clipped = area.intersection(buf.area);
     let layout = palette_layout(model, palette, clipped)?;
     let items = visible_entries(model, palette);
+    let t = super::theme::current();
 
     Clear.render(layout.outer, buf);
+    if !t.is_terminal() {
+        buf.set_style(layout.outer, Style::new().fg(t.text).bg(t.panel_bg));
+    }
     if layout.bordered {
         // Same precedence `visible_candidates` resolves the list with, so the
         // title always names the mode the entries came from.
         let title: std::borrow::Cow<'_, str> =
             if palette.picking_color.is_some() || palette.picking_pane_color.is_some() {
                 COLOR_TITLE.into()
+            } else if palette.picking_theme {
+                THEME_TITLE.into()
             } else if palette.renaming_pane.is_some() {
                 PANE_RENAME_TITLE.into()
             } else if palette.renaming_space.is_some() {
@@ -1599,8 +1656,7 @@ pub fn render_palette(
             } else {
                 TITLE.into()
             };
-        Block::default()
-            .borders(Borders::ALL)
+        t.overlay_block()
             .title(title.as_ref())
             .render(layout.outer, buf);
     }
@@ -1617,9 +1673,7 @@ pub fn render_palette(
     for (rect, group) in &layout.headers {
         Paragraph::new(Line::styled(
             format!("  {}", group.header().to_uppercase()),
-            Style::new()
-                .fg(Color::DarkGray)
-                .add_modifier(Modifier::BOLD),
+            Style::new().fg(t.overlay0).add_modifier(Modifier::BOLD),
         ))
         .render(*rect, buf);
     }
@@ -1662,7 +1716,7 @@ fn plain_line(entry: &Entry, palette: &Palette, selected: bool) -> Line<'static>
         .then(|| super::sidebar::accent(label.split_whitespace().next()))
         .flatten();
     if selected {
-        let mut style = Style::new().add_modifier(Modifier::REVERSED);
+        let mut style = super::theme::current().selected();
         if let Some(color) = swatch {
             style = style.fg(color);
         }
@@ -1677,11 +1731,8 @@ fn plain_line(entry: &Entry, palette: &Palette, selected: bool) -> Line<'static>
 /// A main-menu row: marker, the agent's state glyph in its color, the label
 /// with the letters the query matched picked out, and the hint flush right.
 fn menu_line(entry: &Entry, selected: bool, query: &str, width: u16) -> Line<'static> {
-    let base = if selected {
-        Style::new().add_modifier(Modifier::REVERSED)
-    } else {
-        Style::new()
-    };
+    let t = super::theme::current();
+    let base = if selected { t.selected() } else { Style::new() };
     // One cell of air between the hint and the border.
     let width = usize::from(width).saturating_sub(1);
     let mut spans: Vec<Span<'static>> = Vec::new();
@@ -1721,7 +1772,7 @@ fn menu_line(entry: &Entry, selected: bool, query: &str, width: u16) -> Line<'st
     } else {
         highlight_positions(&entry.label, query)
     };
-    let strong = base.fg(Color::Cyan).add_modifier(Modifier::BOLD);
+    let strong = base.fg(t.highlight()).add_modifier(Modifier::BOLD);
     let mut run = String::new();
     let mut run_strong = false;
     for (i, c) in shown.iter().enumerate() {
@@ -1742,7 +1793,7 @@ fn menu_line(entry: &Entry, selected: bool, query: &str, width: u16) -> Line<'st
     if hint_len > 0 {
         let pad = width.saturating_sub(used + hint_len).max(1);
         spans.push(Span::styled(" ".repeat(pad), base));
-        spans.push(Span::styled(entry.hint.clone(), base.fg(Color::DarkGray)));
+        spans.push(Span::styled(entry.hint.clone(), base.fg(t.overlay0)));
     } else if selected {
         // A selected row is reversed edge to edge, like the prompts' rows.
         spans.push(Span::styled(" ".repeat(width.saturating_sub(used)), base));

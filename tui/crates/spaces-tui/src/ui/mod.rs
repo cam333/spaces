@@ -19,6 +19,7 @@ pub mod palette;
 pub mod selection;
 pub mod sidebar;
 pub mod tabs;
+pub mod theme;
 pub mod toast;
 
 pub use frame::{

@@ -44,6 +44,7 @@ const DISPATCH_METHODS = [
   'pane.create', 'pane.close', 'pane.update', 'pane.restart',
   'fs.folders', ...FILE_METHODS,
   'workspace.create', 'workspace.update', 'workspace.close',
+  'workspace.closedList', 'workspace.closedForget',
   'pane.move',
   'agent.start', 'agent.prompt', 'agent.wait', 'agent.prompt-wait',
   'net.peers', 'net.pair', 'net.forget', 'net.snapshot', 'net.request',
@@ -1119,8 +1120,25 @@ function createRuntime({ nodeId = 'local', spacesDbPath, getApiPort, federationD
           // the workspace was closed).
           state.remove(r.paneId);
         }
-        hub.emit('workspace.removed', { workspaceId, closedPanes });
-        return ok({ ok: true, closedPanes });
+        hub.emit('workspace.removed', { workspaceId, closedPanes, closedKey: removed.closedKey });
+        return ok({ ok: true, closedPanes, closedKey: removed.closedKey });
+      }
+
+      // The workspaces closed here, remembered by workspace.close, so a client
+      // can offer them back. Reopening is the client's: workspace.create, then
+      // pane.create per tab (agentSession to resume a Claude conversation),
+      // then workspace.closedForget.
+      case 'workspace.closedList': {
+        const res = sessionStore.listClosed();
+        if (!res.ok) return err('internal', res.error);
+        return ok({ closed: res.closed });
+      }
+
+      case 'workspace.closedForget': {
+        if (!isNonEmptyString(params.key)) return err('bad_request', 'key must be a non-empty string');
+        const res = sessionStore.forgetClosed(params.key);
+        if (!res.ok) return /no closed workspace/.test(res.error) ? err('not_found', res.error) : err('internal', res.error);
+        return ok({ ok: true });
       }
 
       case 'pane.move': {

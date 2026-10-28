@@ -35,6 +35,8 @@
     "session.list",
     "session.snapshot",
     "workspace.close",
+    "workspace.closedForget",
+    "workspace.closedList",
     "workspace.create",
     "workspace.update"
   ],

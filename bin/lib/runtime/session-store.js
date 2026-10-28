@@ -1,7 +1,31 @@
 // bin/lib/runtime/session-store.js
 'use strict';
 
+const crypto = require('crypto');
 const fs = require('fs');
+
+/**
+ * Closed workspaces, remembered so any client can list them and bring one
+ * back (workspace.closedList, workspace.closedForget). The runtime's own
+ * table, made on first use; never capped: a space should come back however
+ * long ago it was closed.
+ */
+function ensureClosedTable(d) {
+  d.exec(`CREATE TABLE IF NOT EXISTS closed_workspaces (
+    key TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    color TEXT,
+    closed_at TEXT NOT NULL,
+    tabs TEXT NOT NULL DEFAULT '[]'
+  )`);
+}
+
+/** A closed_workspaces row as the protocol gives it. */
+function closedRecord(row) {
+  let tabs = [];
+  try { tabs = JSON.parse(row.tabs); } catch { /* a damaged row lists with no tabs */ }
+  return { key: row.key, name: row.name, color: row.color ?? null, closedAt: row.closed_at, tabs: Array.isArray(tabs) ? tabs : [] };
+}
 
 /**
  * Read-write access to the session database. Distinct from the runtime's
@@ -118,16 +142,50 @@ function createSessionStore({ dbPath } = {}) {
         // cascade that isn't there. The deleted ids are returned so a
         // caller (a later task) can kill the corresponding live PTYs —
         // impossible to recover once the rows are gone.
+        //
+        // The same transaction remembers the workspace in closed_workspaces
+        // (its name, color and each pane's agent, folder, title and Claude
+        // conversation, in tab order), so a close either deletes and
+        // remembers, or does neither.
+        ensureClosedTable(d);
+        const cols = new Set(d.prepare('PRAGMA table_info(panes)').all().map(c => c.name));
+        const pick = ['id', ...['agent_type', 'cwd', 'title', 'claude_session_id', 'sort_order'].filter(c => cols.has(c))];
+        const order = cols.has('sort_order') ? ' ORDER BY sort_order, rowid' : ' ORDER BY rowid';
         const closeTxn = d.transaction((wsId) => {
-          const deletedPaneIds = d
-            .prepare('SELECT id FROM panes WHERE workspace_id = ?')
-            .all(wsId)
-            .map(row => row.id);
+          const ws = d.prepare('SELECT name, color FROM workspaces WHERE id = ?').get(wsId);
+          const rows = d.prepare(`SELECT ${pick.join(', ')} FROM panes WHERE workspace_id = ?${order}`).all(wsId);
+          const tabs = rows.map(r => ({
+            agentType: r.agent_type || 'shell',
+            cwd: r.cwd || null,
+            title: r.title || null,
+            claudeSessionId: r.claude_session_id || null,
+          }));
+          const key = crypto.randomBytes(8).toString('hex');
+          d.prepare('INSERT INTO closed_workspaces (key, name, color, closed_at, tabs) VALUES (?, ?, ?, ?, ?)')
+            .run(key, ws.name, ws.color ?? null, new Date().toISOString(), JSON.stringify(tabs));
           d.prepare('DELETE FROM panes WHERE workspace_id = ?').run(wsId);
           d.prepare('DELETE FROM workspaces WHERE id = ?').run(wsId);
-          return deletedPaneIds;
+          return { deletedPaneIds: rows.map(r => r.id), closedKey: key };
         });
-        return { ok: true, deletedPaneIds: closeTxn(id) };
+        return { ok: true, ...closeTxn(id) };
+      });
+    },
+
+    /** Every closed workspace, newest first. */
+    listClosed() {
+      return withDb(d => {
+        ensureClosedTable(d);
+        const rows = d.prepare('SELECT key, name, color, closed_at, tabs FROM closed_workspaces ORDER BY closed_at DESC, rowid DESC').all();
+        return { ok: true, closed: rows.map(closedRecord) };
+      });
+    },
+
+    /** Forgets one closed workspace (a client reopened it, or the user removed it). */
+    forgetClosed(key) {
+      return withDb(d => {
+        ensureClosedTable(d);
+        const info = d.prepare('DELETE FROM closed_workspaces WHERE key = ?').run(key);
+        return info.changes ? { ok: true } : { ok: false, error: `no closed workspace ${key}` };
       });
     },
 

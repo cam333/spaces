@@ -148,7 +148,50 @@ describe('createSessionStore', () => {
     const store = createSessionStore({ dbPath });
     const { id } = store.createWorkspace({ name: 'empty', color: null }) as any;
     const res = store.closeWorkspace(id) as any;
-    expect(res).toEqual({ ok: true, deletedPaneIds: [] });
+    expect(res).toEqual({ ok: true, deletedPaneIds: [], closedKey: expect.stringMatching(/^[0-9a-f]{16}$/) });
+    store.close();
+  });
+
+  it('remembers a closed workspace: name, color and each tab in order, newest first, until forgotten', () => {
+    const store = createSessionStore({ dbPath });
+    const { id: a } = store.createWorkspace({ name: 'alpha', color: '#89b4fa' }) as any;
+    store.createPane({ paneId: 'p1', workspaceId: a, agentType: 'claude', cwd: '/srv/alpha', title: 'main' });
+    store.createPane({ paneId: 'p2', workspaceId: a, agentType: 'shell', cwd: '/srv/alpha/api', title: 'api' });
+    const closedA = store.closeWorkspace(a) as any;
+    const { id: b } = store.createWorkspace({ name: 'beta', color: null }) as any;
+    const closedB = store.closeWorkspace(b) as any;
+
+    const list = store.listClosed() as any;
+    expect(list.ok).toBe(true);
+    expect(list.closed.map((r: any) => r.key)).toEqual([closedB.closedKey, closedA.closedKey]);
+    expect(list.closed[1]).toEqual({
+      key: closedA.closedKey,
+      name: 'alpha',
+      color: '#89b4fa',
+      closedAt: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/),
+      tabs: [
+        { agentType: 'claude', cwd: '/srv/alpha', title: 'main', claudeSessionId: null },
+        { agentType: 'shell', cwd: '/srv/alpha/api', title: 'api', claudeSessionId: null },
+      ],
+    });
+    // The live tables are empty: the record is all that is left.
+    expect(read('SELECT id FROM workspaces')).toEqual([]);
+    expect(read('SELECT id FROM panes')).toEqual([]);
+
+    expect((store.forgetClosed(closedA.closedKey) as any).ok).toBe(true);
+    expect((store.listClosed() as any).closed.map((r: any) => r.name)).toEqual(['beta']);
+    expect((store.forgetClosed(closedA.closedKey) as any).error).toMatch(/no closed workspace/);
+    store.close();
+  });
+
+  it('lists nothing before any close, and keeps every record (no cap)', () => {
+    const store = createSessionStore({ dbPath });
+    expect(store.listClosed()).toEqual({ ok: true, closed: [] });
+    for (let i = 0; i < 250; i++) {
+      const { id } = store.createWorkspace({ name: `s${i}`, color: null }) as any;
+      store.closeWorkspace(id);
+    }
+    expect((store.listClosed() as any).closed).toHaveLength(250);
     store.close();
   });
 

@@ -33,7 +33,7 @@
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::Line;
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Widget};
 
@@ -335,9 +335,9 @@ pub fn render_menu(model: &Model, menu: &TabMenu, area: Rect, buf: &mut Buffer) 
     let entries = items(model, menu);
     let title = target_name(model, &menu.target);
 
+    let t = super::theme::current();
     Clear.render(layout.outer, buf);
-    Block::default()
-        .borders(Borders::ALL)
+    t.overlay_block()
         .title(format!(" {title} "))
         .render(layout.outer, buf);
     for (rect, index) in &layout.rows {
@@ -356,9 +356,9 @@ pub fn render_menu(model: &Model, menu: &TabMenu, area: Rect, buf: &mut Buffer) 
             Some(Command::ClosePane(_)) | Some(Command::CloseSpace(_))
         );
         let style = if destructive {
-            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
+            Style::default().fg(t.red).add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(Color::Gray)
+            Style::default().fg(t.subtext0)
         };
         Paragraph::new(Line::styled(format!(" {label}"), style)).render(*rect, buf);
     }
@@ -368,6 +368,7 @@ pub fn render_menu(model: &Model, menu: &TabMenu, area: Rect, buf: &mut Buffer) 
 #[allow(clippy::field_reassign_with_default)]
 mod tests {
     use super::*;
+    use ratatui::style::Color;
     use spaces_proto::{AgentState, PaneInfo, WorkspaceInfo};
 
     /// The whole frame, as `ui::render` passes it.

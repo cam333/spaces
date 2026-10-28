@@ -14,7 +14,8 @@
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Span;
 
-/// The brand accent: the web app's default indigo.
+/// The brand accent: the web app's default indigo. The mark is drawn in the
+/// current theme's accent, which is this in the `terminal` theme.
 pub const ACCENT: Color = Color::Rgb(0x63, 0x66, 0xf1);
 
 /// The mark's text, padded inside its pill.
@@ -66,7 +67,7 @@ pub fn badge(host: &str, width: u16) -> (Vec<Span<'static>>, u16) {
         MARK,
         Style::default()
             .fg(INK)
-            .bg(ACCENT)
+            .bg(super::theme::current().accent)
             .add_modifier(Modifier::BOLD),
     ));
     used += mark_width;

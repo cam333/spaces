@@ -3,7 +3,7 @@
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Widget};
 
@@ -21,12 +21,13 @@ pub fn render_files(view: &FilesView, area: Rect, has_keys: bool, buf: &mut Buff
     if rects.header.width == 0 {
         return;
     }
-    let dim = Style::default().fg(Color::DarkGray);
+    let t = super::theme::current();
+    let dim = Style::default().fg(t.overlay0);
 
     // Header: the folder, and the filter while there is one.
     let mut header = vec![Span::styled(
         " \u{1F4C1} ".to_string(),
-        Style::default().fg(Color::Yellow),
+        Style::default().fg(t.yellow),
     )];
     // The path as breadcrumbs: each part opens that folder, the last one
     // (where you are) bold, parts out of reach dimmed.
@@ -40,7 +41,7 @@ pub fn render_files(view: &FilesView, area: Rect, has_keys: bool, buf: &mut Buff
             Style::default().add_modifier(Modifier::BOLD)
         } else if click.is_some() {
             Style::default()
-                .fg(Color::Blue)
+                .fg(t.blue)
                 .add_modifier(Modifier::UNDERLINED)
         } else {
             dim
@@ -50,10 +51,10 @@ pub fn render_files(view: &FilesView, area: Rect, has_keys: bool, buf: &mut Buff
     if view.filtering || !view.filter.is_empty() {
         header.push(Span::styled(
             format!("   filter: {}", sanitize(&view.filter)),
-            Style::default().fg(Color::Cyan),
+            Style::default().fg(t.teal),
         ));
         if view.filtering {
-            header.push(Span::styled("\u{2588}", Style::default().fg(Color::Cyan)));
+            header.push(Span::styled("\u{2588}", Style::default().fg(t.teal)));
         }
     }
     Paragraph::new(Line::from(header)).render(rects.header, buf);
@@ -61,21 +62,17 @@ pub fn render_files(view: &FilesView, area: Rect, has_keys: bool, buf: &mut Buff
     if let Some(editor) = &view.editor {
         render_editor(editor, rects.preview, has_keys, buf);
         let footer = match (&view.status, editor.confirm_discard) {
-            (Some(status), _) => Span::styled(
-                format!(" {}", sanitize(status)),
-                Style::default().fg(Color::Red),
-            ),
+            (Some(status), _) => {
+                Span::styled(format!(" {}", sanitize(status)), Style::default().fg(t.red))
+            }
             (None, true) => Span::styled(
                 " unsaved changes \u{2014} esc again to discard them, ctrl+s to save",
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD),
+                Style::default().fg(t.yellow).add_modifier(Modifier::BOLD),
             ),
             (None, false) => match &view.note {
-                Some(note) => Span::styled(
-                    format!(" {}", sanitize(note)),
-                    Style::default().fg(Color::Green),
-                ),
+                Some(note) => {
+                    Span::styled(format!(" {}", sanitize(note)), Style::default().fg(t.green))
+                }
                 None => Span::styled(" ctrl+s save \u{b7} esc close", dim),
             },
         };
@@ -106,7 +103,7 @@ pub fn render_files(view: &FilesView, area: Rect, has_keys: bool, buf: &mut Buff
                 " upload from (a path on this machine, or drag a file here): {}\u{2588}",
                 sanitize(text)
             ),
-            Style::default().fg(Color::Cyan),
+            Style::default().fg(t.teal),
         ),
         (Some(Prompt::OverwriteMany { locals, taken }), _, _) => Span::styled(
             format!(
@@ -115,7 +112,7 @@ pub fn render_files(view: &FilesView, area: Rect, has_keys: bool, buf: &mut Buff
                 locals.len()
             ),
             Style::default()
-                .fg(Color::Yellow)
+                .fg(t.yellow)
                 .add_modifier(Modifier::BOLD),
         ),
         (Some(Prompt::Overwrite { local }), _, _) => Span::styled(
@@ -124,19 +121,19 @@ pub fn render_files(view: &FilesView, area: Rect, has_keys: bool, buf: &mut Buff
                 sanitize(local.rsplit(['/', '\\']).next().unwrap_or(local))
             ),
             Style::default()
-                .fg(Color::Yellow)
+                .fg(t.yellow)
                 .add_modifier(Modifier::BOLD),
         ),
         (Some(Prompt::NewFolder(text)), _, _) => Span::styled(
             format!(" new folder: {}\u{2588}", sanitize(text)),
-            Style::default().fg(Color::Cyan),
+            Style::default().fg(t.teal),
         ),
         (Some(Prompt::Rename { text, .. }), _, _) => Span::styled(
             format!(
                 " rename to (or a path to move it): {}\u{2588}",
                 sanitize(text)
             ),
-            Style::default().fg(Color::Cyan),
+            Style::default().fg(t.teal),
         ),
         (Some(Prompt::Delete { name, is_dir, .. }), _, _) => Span::styled(
             if *is_dir {
@@ -147,15 +144,15 @@ pub fn render_files(view: &FilesView, area: Rect, has_keys: bool, buf: &mut Buff
             } else {
                 format!(" delete {}? y/n", sanitize(name))
             },
-            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            Style::default().fg(t.red).add_modifier(Modifier::BOLD),
         ),
         (None, Some(status), _) => Span::styled(
             format!(" {}", sanitize(status)),
-            Style::default().fg(Color::Red),
+            Style::default().fg(t.red),
         ),
         (None, None, Some(note)) => Span::styled(
             format!(" {}", sanitize(note)),
-            Style::default().fg(Color::Green),
+            Style::default().fg(t.green),
         ),
         (None, None, None) => {
             let keys = if view.filtering {
@@ -175,6 +172,7 @@ fn render_list(view: &FilesView, area: Rect, active: bool, buf: &mut Buffer) {
     if area.width == 0 || area.height == 0 {
         return;
     }
+    let t = super::theme::current();
     let visible = view.visible();
     if visible.is_empty() {
         let note = if view.listing.is_none() {
@@ -184,7 +182,7 @@ fn render_list(view: &FilesView, area: Rect, active: bool, buf: &mut Buffer) {
         } else {
             " (nothing matches)"
         };
-        Paragraph::new(Line::styled(note, Style::default().fg(Color::DarkGray))).render(area, buf);
+        Paragraph::new(Line::styled(note, Style::default().fg(t.overlay0))).render(area, buf);
         return;
     }
     let width = usize::from(area.width);
@@ -197,12 +195,12 @@ fn render_list(view: &FilesView, area: Rect, active: bool, buf: &mut Buffer) {
     {
         let y = area.y + row as u16;
         let (icon, color) = match entry.kind {
-            EntryKind::Dir => ("\u{25B8} ", Color::Blue),
-            EntryKind::LinkDir => ("\u{21AA} ", Color::Cyan),
-            EntryKind::LinkFile => ("\u{21AA} ", Color::Gray),
-            EntryKind::Broken => ("\u{2717} ", Color::Red),
-            EntryKind::Up => ("\u{2191} ", Color::Blue),
-            _ => ("  ", Color::Gray),
+            EntryKind::Dir => ("\u{25B8} ", t.blue),
+            EntryKind::LinkDir => ("\u{21AA} ", t.teal),
+            EntryKind::LinkFile => ("\u{21AA} ", t.subtext0),
+            EntryKind::Broken => ("\u{2717} ", t.red),
+            EntryKind::Up => ("\u{2191} ", t.blue),
+            _ => ("  ", t.subtext0),
         };
         let suffix = if entry.kind.is_dir() { "/" } else { "" };
         let size = if entry.kind.is_dir() || entry.kind == EntryKind::Up {
@@ -221,15 +219,17 @@ fn render_list(view: &FilesView, area: Rect, active: bool, buf: &mut Buffer) {
         let pad = width.saturating_sub(2 + shown.chars().count() + size.chars().count() + 1);
         let mut style = Style::default().fg(color);
         if index == view.selected {
-            style = if active {
+            style = if active && t.is_terminal() {
                 style.add_modifier(Modifier::REVERSED | Modifier::BOLD)
+            } else if active {
+                style.bg(t.selection_bg).add_modifier(Modifier::BOLD)
             } else {
                 style.add_modifier(Modifier::UNDERLINED)
             };
         }
         let line = Line::from(vec![
             Span::styled(format!("{icon}{shown}{}", " ".repeat(pad)), style),
-            Span::styled(format!("{size} "), style.fg(Color::DarkGray)),
+            Span::styled(format!("{size} "), style.fg(t.overlay0)),
         ]);
         Paragraph::new(line).render(Rect::new(area.x, y, area.width, 1), buf);
     }
@@ -239,13 +239,14 @@ fn render_preview(view: &FilesView, area: Rect, active: bool, buf: &mut Buffer) 
     if area.width == 0 || area.height == 0 {
         return;
     }
-    let dim = Style::default().fg(Color::DarkGray);
+    let t = super::theme::current();
+    let dim = Style::default().fg(t.overlay0);
     let Some(p) = &view.preview else {
         Paragraph::new(Line::styled(" select a file to preview it", dim)).render(area, buf);
         return;
     };
     let title_style = if active {
-        Style::default().add_modifier(Modifier::BOLD | Modifier::REVERSED)
+        title_chip(&t)
     } else {
         Style::default().add_modifier(Modifier::BOLD)
     };
@@ -314,15 +315,16 @@ fn render_editor(editor: &crate::editor::Editor, area: Rect, active: bool, buf: 
     if area.width == 0 || area.height < 2 {
         return;
     }
-    let dim = Style::default().fg(Color::DarkGray);
+    let t = super::theme::current();
+    let dim = Style::default().fg(t.overlay0);
     let mut title = vec![Span::styled(
         format!(" editing {} ", sanitize(&editor.name)),
-        Style::default().add_modifier(Modifier::BOLD | Modifier::REVERSED),
+        title_chip(&t),
     )];
     if editor.dirty {
         title.push(Span::styled(
             " \u{25cf} unsaved",
-            Style::default().fg(Color::Yellow),
+            Style::default().fg(t.yellow),
         ));
     }
     Paragraph::new(Line::from(title)).render(Rect::new(area.x, area.y, area.width, 1), buf);
@@ -361,6 +363,16 @@ fn render_editor(editor: &crate::editor::Editor, area: Rect, active: bool, buf: 
                 }
             }
         }
+    }
+}
+
+/// The title of the half that has the keys: reversed in `terminal`, a chip
+/// in the accent everywhere else.
+fn title_chip(t: &super::theme::Theme) -> Style {
+    if t.is_terminal() {
+        Style::default().add_modifier(Modifier::BOLD | Modifier::REVERSED)
+    } else {
+        t.chip(t.accent)
     }
 }
 

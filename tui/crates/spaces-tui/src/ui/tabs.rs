@@ -55,7 +55,7 @@
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Widget};
 
@@ -305,7 +305,11 @@ pub fn render_tab_bar(model: &Model, bar: &TabBar, area: Rect, buf: &mut Buffer)
     if area.width == 0 || area.height == 0 {
         return;
     }
-    let dim = Style::default().fg(Color::DarkGray);
+    let t = super::theme::current();
+    if !t.is_terminal() {
+        buf.set_style(area.intersection(buf.area), Style::new().bg(t.panel_bg));
+    }
+    let dim = Style::default().fg(t.overlay0);
 
     for (rect, pane_id) in &bar.tabs {
         let Some(pane) = model.local_panes().iter().find(|p| &p.id == pane_id) else {
@@ -342,11 +346,9 @@ pub fn render_tab_bar(model: &Model, bar: &TabBar, area: Rect, buf: &mut Buffer)
         // brighter — and is why the accent is applied before the reverse
         // rather than instead of it.
         let accent = super::sidebar::accent(pane.color.as_deref());
-        let mut style = Style::default().fg(accent.unwrap_or(Color::Gray));
+        let mut style = Style::default().fg(accent.unwrap_or(t.subtext0));
         if active {
-            style = Style::default()
-                .fg(accent.unwrap_or(Color::White))
-                .add_modifier(Modifier::REVERSED | Modifier::BOLD);
+            style = t.chip(accent.unwrap_or(t.active_tab()));
         }
         Paragraph::new(Line::from(Span::styled(text, style))).render(*rect, buf);
     }
@@ -354,11 +356,9 @@ pub fn render_tab_bar(model: &Model, bar: &TabBar, area: Rect, buf: &mut Buffer)
     if bar.files_tab.width > 0 {
         let shown = model.shown_files().is_some();
         let style = if shown {
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::REVERSED | Modifier::BOLD)
+            t.chip(t.yellow)
         } else {
-            Style::default().fg(Color::Yellow)
+            Style::default().fg(t.yellow)
         };
         let label = if shown { "[files]" } else { " files " };
         Paragraph::new(Line::styled(label, style)).render(bar.files_tab, buf);
@@ -374,9 +374,7 @@ pub fn render_tab_bar(model: &Model, bar: &TabBar, area: Rect, buf: &mut Buffer)
     // never jump in and out as the user scrolls through it.
     let button = |live: bool| {
         if live {
-            Style::default()
-                .fg(Color::Gray)
-                .add_modifier(Modifier::BOLD)
+            Style::default().fg(t.subtext0).add_modifier(Modifier::BOLD)
         } else {
             dim
         }

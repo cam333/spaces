@@ -74,6 +74,16 @@ minute. Turn tips off from the menu (`ctrl+k`, type `tips`) or with
 `spaces tips off`; the choice is saved in this machine's
 `~/.spaces/tui.json`, and `SPACES_NO_TIPS=1` skips them for one run.
 
+The client is drawn in a theme, Catppuccin Mocha unless you choose another.
+`ctrl+k`, type `theme`: the picker previews each theme on the whole screen
+as you move through it, and enter keeps one. The themes are herdr's:
+`catppuccin`, `catppuccin-latte`, `tokyo-night`, `tokyo-night-day`,
+`dracula`, `nord`, `gruvbox`, `gruvbox-light`, `one-dark`, `one-light`,
+`solarized`, `solarized-light`, `kanagawa`, `kanagawa-lotus`, `rose-pine`,
+`rose-pine-dawn` and `vesper`, plus `terminal`, which uses your terminal's
+own colours. The choice is saved as `"theme"` in the same `tui.json`.
+Agents' output keeps its own colours whatever the theme.
+
 ## The screen
 
 - **Spaces**, top of the sidebar: one entry per space, with its agents'

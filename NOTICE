@@ -3,3 +3,7 @@ Copyright 2025-2026 John Longo
 
 Licensed under the Apache License, Version 2.0.
 See the LICENSE file for the full license text.
+
+The terminal client's themes (tui/crates/spaces-tui/src/ui/theme.rs) are
+ported from herdr (https://github.com/herdrdev/herdr), licensed under the
+Apache License, Version 2.0.

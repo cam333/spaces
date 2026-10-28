@@ -26,6 +26,7 @@ pub const TIPS: &[&str] = &[
     "click a toast to jump to the agent that blocked or finished",
     "right-click a tab to close its pane or move it to another space",
     "drag the sidebar's edge to make it wider or narrower",
+    "ctrl+k, then type theme: preview 18 colour themes and keep one",
     "the sidebar shows each space's git branch: ↑ ahead, ↓ behind, * dirty",
     "a new agent offers to resume one of the folder's past sessions",
     "Claude Code panes resume their conversation after a restart",
@@ -87,10 +88,33 @@ pub fn enabled() -> bool {
     prefs_path().is_none_or(|p| enabled_in(&p))
 }
 
+/// One setting from this machine's `tui.json`, if it has one. Shared with
+/// [`crate::ui::theme`], whose choice lives in the same file.
+pub fn read_pref(key: &str) -> Option<serde_json::Value> {
+    read_prefs(&prefs_path()?).remove(key)
+}
+
+/// Saves one setting to this machine's `tui.json`. Best effort, like
+/// [`save_enabled`].
+pub fn save_pref(key: &str, value: serde_json::Value) {
+    if let Some(p) = prefs_path() {
+        let _ = save_pref_in(&p, key, value);
+    }
+}
+
 /// Writes the setting to `path`, keeping anything else the file holds.
 pub fn save_enabled_in(path: &std::path::Path, on: bool) -> std::io::Result<()> {
+    save_pref_in(path, "tips", serde_json::Value::Bool(on))
+}
+
+/// Writes `key` to the settings at `path`, keeping anything else they hold.
+pub fn save_pref_in(
+    path: &std::path::Path,
+    key: &str,
+    value: serde_json::Value,
+) -> std::io::Result<()> {
     let mut prefs = read_prefs(path);
-    prefs.insert("tips".into(), serde_json::Value::Bool(on));
+    prefs.insert(key.into(), value);
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
@@ -158,6 +182,9 @@ mod tests {
         assert_eq!(kept["other"], 1);
         save_enabled_in(&path, true).unwrap();
         assert!(enabled_in(&path));
+        save_pref_in(&path, "theme", serde_json::Value::String("nord".into())).unwrap();
+        assert_eq!(read_prefs(&path)["theme"], "nord");
+        assert!(enabled_in(&path), "saving the theme keeps the tips setting");
         std::fs::write(&path, "not json").unwrap();
         assert!(
             enabled_in(&path),
